@@ -1,0 +1,159 @@
+{
+  "app_name": "Justlocal",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A local-first medicine discovery and ordering platform connecting customers with nearby pharmacies with clean teal and white trust aesthetics.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#0B2545",
+    "surfaceSecondary": "#F4F7F6",
+    "onSurfaceSecondary": "#134074",
+    "surfaceTertiary": "#E2E8F0",
+    "onSurfaceTertiary": "#0B2545",
+    "surfaceInverse": "#0B2545",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#0EA5E9",
+    "brandPrimary": "#0D9488",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#0284C7",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#CCFBF1",
+    "onBrandTertiary": "#115E59",
+    "success": "#10B981",
+    "onSuccess": "#FFFFFF",
+    "warning": "#F59E0B",
+    "onWarning": "#FFFFFF",
+    "error": "#EF4444",
+    "onError": "#FFFFFF",
+    "info": "#3B82F6",
+    "onInfo": "#FFFFFF",
+    "border": "#E2E8F0",
+    "borderStrong": "#0D9488",
+    "divider": "#F1F5F9",
+    "muted": "#64748B",
+    "onBrand": "#FFFFFF"
+  },
+  "typography": {
+    "displayFontFamily": "System",
+    "textFontFamily": "System",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room with iOS-native padding and fixed bottom action bars.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use frosted glass on sticky search bars, tab bars, and bottom sheet headers."
+    ],
+    "dont's": [
+      "Never apply blur to dense lists or form fields."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Onboarding & Auth",
+      "purpose": "Seamless phone/email login and welcoming patients to local pharmacy delivery.",
+      "states": {
+        "loading": "Checking account status...",
+        "empty": "No previous sessions found.",
+        "error": "Authentication failed. Please check credentials."
+      },
+      "layout": "FullScreen swipe slides with smooth indicators, followed by clean phone/email auth card with Apple/Google SSO placeholders."
+    },
+    {
+      "name": "Home",
+      "purpose": "Primary local discovery hub showing nearby pharmacies, urgent OTC items, and prescription upload banner.",
+      "states": {
+        "loading": "Locating nearby pharmacies...",
+        "empty": "No pharmacies found in your selected area.",
+        "error": "Unable to fetch location. Tap to retry."
+      },
+      "layout": "Sticky header with location selector and search bar, prescription upload banner card, horizontal category chips, nearby pharmacy cards with stock status, and trending medicines list."
+    },
+    {
+      "name": "Categories",
+      "purpose": "Browse medicines and healthcare essentials organized by therapeutic categories.",
+      "states": {
+        "loading": "Loading categories...",
+        "empty": "No categories available.",
+        "error": "Failed to load categories. Retry."
+      },
+      "layout": "Grid of category cards with teal icon containers and item counts, searchable instant filter."
+    },
+    {
+      "name": "Orders",
+      "purpose": "Track active deliveries and view past medicine order history with detailed timelines.",
+      "states": {
+        "loading": "Fetching orders...",
+        "empty": "No orders placed yet. Start by ordering required medicines.",
+        "error": "Could not retrieve orders."
+      },
+      "layout": "Segmented control for Active vs Past orders, order status cards with live driver tracking link, and reorder button."
+    },
+    {
+      "name": "Offers",
+      "purpose": "Discover healthcare discounts, pharmacy cashback codes, and wellness deals.",
+      "states": {
+        "loading": "Finding best offers...",
+        "empty": "No active offers right now.",
+        "error": "Failed to load offers."
+      },
+      "layout": "Featured promo banner card, coupon code list with copy actions, and applicable pharmacy tags."
+    },
+    {
+      "name": "Account",
+      "purpose": "Manage profile details, delivery addresses, saved prescriptions, and customer support.",
+      "states": {
+        "loading": "Loading profile...",
+        "empty": "Please sign in to view account details.",
+        "error": "Failed to load user profile."
+      },
+      "layout": "User profile card at top, settings list rows with icons (Addresses, Prescriptions, Payments, Support, Logout)."
+    }
+  ],
+  "images": {
+    "pharmacy_storefront": {
+      "url": "https://images.unsplash.com/photo-1586015518255-ec32bce45ecf?auto=format&fit=crop&q=80&w=800",
+      "alt": "Local pharmacy storefront with shelves of medicines"
+    },
+    "prescription_banner": {
+      "url": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?auto=format&fit=crop&q=80&w=800",
+      "alt": "Doctor writing prescription with pills nearby"
+    }
+  },
+  "instructions_to_main_agent": "Ensure all screens respect safe area boundaries, use teal/green primary actions (#0D9488), dark navy text (#0B2545), and white card backgrounds. Make sure real logo fetching or icon containers are used for pharmacies. Include sticky bottom CTAs on checkout and cart screens."
+}

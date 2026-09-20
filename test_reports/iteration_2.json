@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 2: validated new Apple/Emergent-Google session/Razorpay endpoints and unified current_user (JWT + session_token). Backend: 30/30 pytest passed including 9 new tests (Razorpay config placeholder, /order 503, Apple invalid token→401, /auth/session bogus id→401, /me accepts fake session_token seeded in user_sessions, /me rejects expired session, /me rejects unknown bearer). All prior flows (login/register/me/catalog/orders/addresses/prescriptions) still green; POST /api/orders still does not leak _id or user_id. Frontend (web preview @ 390x844): AuthScreen shows CapsulePill logo + 'Welcome back 👋' + segmented Log in/Sign up + 'MEDICINES CLOSER TO YOU' tag + Google button + disabled Apple pill (Platform.OS==='web'). Demo login → home → add-to-cart → cart → checkout renders both payment rows (COD selected, 'Online payment (setup pending)' disabled because config.ready=false). Placing order (COD) hits /api/orders, closes cart, returns to home. Tab nav to Account works, logout returns to AuthScreen.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "AuthScreen shadow styles", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' (RN Web 0.19+). References: /app/frontend/app/index.tsx:83 (authCard) and :96 (authPrimary) — both use shadowColor/shadowOffset/shadowOpacity/shadowRadius. Cosmetic on web; harmless on iOS/Android but should be migrated to boxShadow for web parity."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_new_endpoints.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Cosmetic) Migrate shadow* style props in /app/frontend/app/index.tsx (authCard L83, authPrimary L96) to boxShadow to silence RN Web deprecation warning.",
+    "(Optional) When enabling Razorpay in production, remember the current guard: rzp_client is initialised at import time (server.py:41). Any change to RAZORPAY_KEY_ID/SECRET at runtime needs a backend restart. Consider re-checking env inside razorpay_config and razorpay_create_order so keys can be hot-rotated.",
+    "(Optional) Add a response_model to POST /api/orders (e.g. an OrderOut Pydantic model) to enforce _id exclusion at the framework layer, so future changes cannot re-introduce the ObjectId leak."
+  ],
+  "critical_code_review_comments": [
+    "current_user (server.py:123-147) correctly accepts BOTH JWT and session_token from user_sessions, timezone-normalises expires_at, and 401s on missing/expired — verified with seeded fixture.",
+    "razorpay_config (server.py:477) returns key_id='' while placeholder, matching frontend expectations. razorpay_create_order (server.py:482) raises 503 when rzp_client is None — clean.",
+    "apple_signin (server.py:300) returns 401 for any jwt.PyJWTError and 500 only when APPLE_AUDIENCES is unset — currently configured, so invalid tokens correctly 401. Good.",
+    "exchange_emergent_session (server.py:353) 401s on upstream non-200, and 502 only on network errors — validated with a bogus session_id (upstream 401 → API 401).",
+    "index.tsx is now ~1150 lines — consider splitting AuthScreen, CartModal, AccountScreen etc into separate files for maintainability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_new_endpoints.py (new — 9 tests for Apple/session/Razorpay)"
+  ],
+  "success_rate": {"backend": "100% (30/30)", "frontend": "100% (auth + demo login + cart + checkout payment radios + COD place order + logout)"},
+  "seed_data_creation": "None persisted. Test seeds a fake user_sessions row per test and deletes it in the fixture teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/ -v (30 tests, ~5s). Session-token test relies on pymongo direct access via MONGO_URL/DB_NAME env; installed via `pip install pymongo`. Razorpay keys must remain 'placeholder' in /app/backend/.env for the config/order tests to pass. Frontend testIDs available: auth-tab-login, auth-tab-signup, auth-submit-button, social-google-button, social-apple-disabled (web) / social-apple-button (ios), cart-button, product-add-<id>, product-<id>, checkout-button, payment-cod, payment-razorpay, place-order-button, logout-button, auth-toggle."
+}
