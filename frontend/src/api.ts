@@ -1,7 +1,10 @@
 import Constants from "expo-constants";
 
-export type User = { id: string; name: string; email: string; phone?: string | null; addresses: Address[] };
+export type User = { id: string; name: string; email: string; phone?: string | null; addresses: Address[]; family_members: FamilyMember[] };
 export type Address = { id: string; label: string; address: string; phone?: string | null; default?: boolean };
+export type FamilyMember = { id: string; name: string; relation: string; age?: number | null; allergies?: string | null };
+export type Refill = { id: string; medicine_id: string; medicine_name: string; quantity: number; price: number; pharmacy_id?: string; pharmacy_name?: string; for_profile_id?: string | null; for_profile_name?: string | null; next_refill_at: string; status: string; last_order_id?: string };
+export type SavedLocation = { id: string; label: string; address: string; latitude?: number; longitude?: number; savedAt: number };
 export type Medicine = { id: string; name: string; pack: string; manufacturer: string; price: number; category: string; prescription_required: boolean; availability: string; nearby_stores: number; composition: string };
 export type Category = { id: string; name: string; icon: string; group: string; count: number };
 export type Pharmacy = { id: string; name: string; area: string; distance: string; eta: string; rating: number; reviews: string; threshold: number; status: string };
@@ -49,6 +52,11 @@ export const api = {
   orders: (token: string) => request<Order[]>("/orders", {}, token),
   createOrder: (token: string, body: object) => request<Order>("/orders", { method: "POST", body: JSON.stringify(body) }, token),
   addAddress: (token: string, body: object) => request<Address>("/addresses", { method: "POST", body: JSON.stringify(body) }, token),
+  listFamily: (token: string) => request<FamilyMember[]>("/family", {}, token),
+  addFamily: (token: string, body: object) => request<FamilyMember>("/family", { method: "POST", body: JSON.stringify(body) }, token),
+  removeFamily: (token: string, memberId: string) => request<{ ok: boolean }>(`/family/${memberId}`, { method: "DELETE" }, token),
+  listRefills: (token: string) => request<Refill[]>("/refills", {}, token),
+  reorderRefill: (token: string, refillId: string, body: object) => request<Order>(`/refills/${refillId}/reorder`, { method: "POST", body: JSON.stringify(body) }, token),
   razorpayConfig: () => request<{ ready: boolean; key_id: string }>("/payments/razorpay/config"),
   razorpayOrder: (token: string, order_id: string) => request<RazorpayCheckout>("/payments/razorpay/order", { method: "POST", body: JSON.stringify({ order_id }) }, token),
   razorpayVerify: (token: string, body: object) => request<{ ok: boolean; status: string }>("/payments/razorpay/verify", { method: "POST", body: JSON.stringify(body) }, token),

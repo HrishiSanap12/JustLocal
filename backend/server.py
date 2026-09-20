@@ -82,12 +82,26 @@ class OrderCreate(BaseModel):
     discount: float = Field(default=0, ge=0)
     delivery_fee: float = Field(default=0, ge=0)
     total: float = Field(ge=0)
+    for_profile_id: Optional[str] = None
+    for_profile_name: Optional[str] = None
 
 
 class AddressInput(BaseModel):
     label: str
     address: str
     phone: Optional[str] = None
+
+
+class FamilyMemberInput(BaseModel):
+    name: str
+    relation: str  # self | spouse | parent | child | sibling | other
+    age: Optional[int] = Field(default=None, ge=0, le=120)
+    allergies: Optional[str] = None
+
+
+class RefillReorderInput(BaseModel):
+    address: Optional[str] = None
+    for_profile_id: Optional[str] = None
 
 
 class RazorpayOrderInput(BaseModel):
@@ -112,6 +126,7 @@ def safe_user(document: dict) -> dict:
         "email": document.get("email", ""),
         "phone": document.get("phone"),
         "addresses": document.get("addresses", []),
+        "family_members": document.get("family_members", []),
     }
 
 
@@ -444,11 +459,35 @@ async def create_order(payload: OrderCreate, user: dict = Depends(current_user))
         "items": [item.model_dump() for item in payload.items],
         "address": payload.address, "delivery_method": payload.delivery_method, "subtotal": payload.subtotal,
         "discount": payload.discount, "delivery_fee": payload.delivery_fee, "total": payload.total,
+        "for_profile_id": payload.for_profile_id, "for_profile_name": payload.for_profile_name,
         "payment_status": "pending", "status": "Order Placed", "created_at": now_iso(),
         "eta": "Arriving in 25–35 min",
         "timeline": ["Order Placed", "Pharmacy Confirmed", "Preparing", "Out for Delivery", "Delivered"],
     }
     await db.orders.insert_one(document)
+
+    # Auto-create refill reminders for any prescription medicine in this order
+    prescription_ids = [item.medicine_id for item in payload.items]
+    if prescription_ids:
+        rx = await db.medicines.find({"id": {"$in": prescription_ids}, "prescription_required": True}, {"_id": 0}).to_list(50)
+        rx_by_id = {m["id"]: m for m in rx}
+        refills = []
+        for item in payload.items:
+            medicine = rx_by_id.get(item.medicine_id)
+            if not medicine:
+                continue
+            due = datetime.now(timezone.utc) + timedelta(days=30)
+            refills.append({
+                "id": f"refill-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
+                "medicine_id": item.medicine_id, "medicine_name": item.name, "quantity": item.quantity, "price": item.price,
+                "pharmacy_id": payload.pharmacy_id, "pharmacy_name": pharmacy["name"] if pharmacy else "Local pharmacy",
+                "for_profile_id": payload.for_profile_id, "for_profile_name": payload.for_profile_name,
+                "last_order_id": document["id"], "next_refill_at": due.isoformat(), "status": "upcoming",
+                "created_at": now_iso(),
+            })
+        if refills:
+            await db.refills.insert_many(refills)
+
     return {key: value for key, value in document.items() if key not in {"_id", "user_id"}}
 
 
@@ -471,6 +510,92 @@ async def add_address(payload: AddressInput, user: dict = Depends(current_user))
     address = {"id": f"addr-{uuid.uuid4().hex[:8]}", "label": payload.label, "address": payload.address, "phone": payload.phone or user.get("phone"), "default": len(user.get("addresses", [])) == 0}
     await db.users.update_one({"id": user["id"]}, {"$push": {"addresses": address}})
     return address
+
+
+# ---------------- Family profiles ----------------
+@api_router.get("/family")
+async def list_family(user: dict = Depends(current_user)) -> list:
+    return user.get("family_members", [])
+
+
+@api_router.post("/family")
+async def add_family_member(payload: FamilyMemberInput, user: dict = Depends(current_user)) -> dict:
+    member = {
+        "id": f"fam-{uuid.uuid4().hex[:8]}",
+        "name": payload.name.strip(),
+        "relation": payload.relation.strip().lower(),
+        "age": payload.age,
+        "allergies": payload.allergies,
+    }
+    await db.users.update_one({"id": user["id"]}, {"$push": {"family_members": member}})
+    return member
+
+
+@api_router.delete("/family/{member_id}")
+async def remove_family_member(member_id: str, user: dict = Depends(current_user)) -> dict:
+    result = await db.users.update_one({"id": user["id"]}, {"$pull": {"family_members": {"id": member_id}}})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Family member not found")
+    return {"ok": True}
+
+
+# ---------------- Refill reminders ----------------
+@api_router.get("/refills")
+async def list_refills(user: dict = Depends(current_user)) -> list:
+    return await db.refills.find(
+        {"user_id": user["id"], "status": "upcoming"},
+        {"_id": 0, "user_id": 0},
+    ).sort("next_refill_at", 1).to_list(100)
+
+
+@api_router.post("/refills/{refill_id}/reorder")
+async def reorder_refill(refill_id: str, payload: RefillReorderInput, user: dict = Depends(current_user)) -> dict:
+    refill = await db.refills.find_one({"id": refill_id, "user_id": user["id"]}, {"_id": 0})
+    if not refill:
+        raise HTTPException(status_code=404, detail="Refill not found")
+    address = payload.address or (user.get("addresses") or [{}])[0].get("address")
+    if not address:
+        raise HTTPException(status_code=400, detail="Add a delivery address before reordering")
+
+    subtotal = float(refill["price"]) * int(refill["quantity"])
+    delivery_fee = 0 if subtotal >= 299 else 29
+    total = subtotal + delivery_fee
+    pharmacy = await db.pharmacies.find_one({"id": refill.get("pharmacy_id")}, {"_id": 0})
+    for_profile_name = payload.for_profile_id and next(
+        (m["name"] for m in user.get("family_members", []) if m["id"] == payload.for_profile_id), None
+    )
+
+    document = {
+        "id": f"order-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
+        "order_number": f"JL{datetime.now(timezone.utc).strftime('%y%m%d')}{uuid.uuid4().hex[:3].upper()}",
+        "pharmacy_id": refill.get("pharmacy_id") or "pharmacy-1",
+        "pharmacy_name": pharmacy["name"] if pharmacy else refill.get("pharmacy_name") or "Local pharmacy",
+        "items": [{"medicine_id": refill["medicine_id"], "name": refill["medicine_name"], "quantity": int(refill["quantity"]), "price": float(refill["price"])}],
+        "address": address, "delivery_method": "delivery", "subtotal": subtotal, "discount": 0,
+        "delivery_fee": delivery_fee, "total": total,
+        "for_profile_id": payload.for_profile_id, "for_profile_name": for_profile_name,
+        "payment_status": "pending", "status": "Order Placed", "created_at": now_iso(),
+        "eta": "Arriving in 25–35 min",
+        "timeline": ["Order Placed", "Pharmacy Confirmed", "Preparing", "Out for Delivery", "Delivered"],
+    }
+    await db.orders.insert_one(document)
+
+    # Push the next refill date 30 days out and mark this reminder handled
+    next_due = datetime.now(timezone.utc) + timedelta(days=30)
+    await db.refills.update_one(
+        {"id": refill_id, "user_id": user["id"]},
+        {"$set": {"status": "reordered", "reordered_at": now_iso(), "last_order_id": document["id"]}},
+    )
+    await db.refills.insert_one({
+        "id": f"refill-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
+        "medicine_id": refill["medicine_id"], "medicine_name": refill["medicine_name"],
+        "quantity": int(refill["quantity"]), "price": float(refill["price"]),
+        "pharmacy_id": refill.get("pharmacy_id"), "pharmacy_name": refill.get("pharmacy_name"),
+        "for_profile_id": payload.for_profile_id, "for_profile_name": for_profile_name,
+        "last_order_id": document["id"], "next_refill_at": next_due.isoformat(), "status": "upcoming",
+        "created_at": now_iso(),
+    })
+    return {key: value for key, value in document.items() if key not in {"_id", "user_id"}}
 
 
 # ---------------- Razorpay ----------------

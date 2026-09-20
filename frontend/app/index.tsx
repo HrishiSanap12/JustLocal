@@ -8,8 +8,10 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Address, api, CartItem, Category, Medicine, Offer, Order, Pharmacy, User } from "@/src/api";
+import { Address, api, CartItem, Category, FamilyMember, Medicine, Offer, Order, Pharmacy, Refill, SavedLocation, User } from "@/src/api";
 import { CapsulePill, Wordmark } from "@/src/components/capsule-pill";
+import { FamilyModal } from "@/src/components/family-modal";
+import { LocationModal, loadSavedLocation } from "@/src/components/location-modal";
 import { extractSessionId, signInWithApple, signInWithGoogle } from "@/src/auth-helpers";
 import { makeStyles, useTheme } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
@@ -420,10 +422,12 @@ function Empty({ icon, title, copy }: { icon: IconName; title: string; copy: str
 }
 
 // ----------------- SCREENS -----------------
-function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription, onCategory, onProduct, onAdd, onCart, search, setSearch, cartCount }: {
+function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription, onCategory, onProduct, onAdd, onCart, search, setSearch, cartCount, location, onLocation, refills, activeProfile, onReorderRefill }: {
   categories: Category[]; pharmacies: Pharmacy[]; offers: Offer[]; medicines: Medicine[]; onTab: (t: Tab) => void;
   onPrescription: () => void; onCategory: (c: string) => void; onProduct: (m: Medicine) => void; onAdd: (m: Medicine) => void;
   onCart: () => void; search: string; setSearch: (v: string) => void; cartCount: number;
+  location: SavedLocation | null; onLocation: () => void;
+  refills: Refill[]; activeProfile: FamilyMember | null; onReorderRefill: (r: Refill) => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -442,12 +446,18 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
         </Press>
       </View>
 
-      <Press style={styles.locationRow} onPress={() => Alert.alert("Location", "Using your current location for nearby pharmacy results.")}>
+      <Press testID="location-open" style={styles.locationRow} onPress={onLocation}>
         <Icon name="location" size={20} color={colors.brandPrimary} />
-        <View>
-          <Text style={{ color: colors.onSurface, fontSize: 14, fontWeight: "800" }}>Mumbai  <Icon name="chevron-down" size={14} color={colors.onSurface} /></Text>
-          <Text style={styles.muted}>Hiranandani Estate, Thane (W)</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.onSurface, fontSize: 14, fontWeight: "800" }}>{location?.label ?? "Choose your location"}  <Icon name="chevron-down" size={14} color={colors.onSurface} /></Text>
+          <Text style={styles.muted} numberOfLines={1}>{location?.address ?? "Tap to set delivery address"}</Text>
         </View>
+        {activeProfile ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.brandTertiary }}>
+            <Icon name="people" size={12} color={colors.brandPrimary} />
+            <Text style={{ color: colors.onBrandTertiary, fontSize: 11, fontWeight: "800" }}>For {activeProfile.name.split(" ")[0]}</Text>
+          </View>
+        ) : null}
       </Press>
 
       <View style={styles.search}>
@@ -480,6 +490,36 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
         </View>
         <Text style={styles.link}>Upload</Text>
       </Press>
+
+      {refills.length > 0 && (
+        <View style={{ marginBottom: 20 }}>
+          <View style={[styles.rowBetween, { marginBottom: 10 }]}>
+            <Text style={styles.sectionTitle}>Refill reminders</Text>
+            <Press onPress={() => onTab("orders")}><Text style={styles.link}>All refills →</Text></Press>
+          </View>
+          {refills.slice(0, 2).map((refill) => {
+            const days = Math.max(0, Math.ceil((new Date(refill.next_refill_at).getTime() - Date.now()) / 86400000));
+            const soon = days <= 3;
+            return (
+              <View key={refill.id} style={[styles.rxCard, { marginBottom: 10, backgroundColor: soon ? colors.brandTertiary : colors.surfaceSecondary }]}>
+                <View style={[styles.rxIcon, { backgroundColor: soon ? colors.brandPrimary : colors.brandTertiary }]}>
+                  <Icon name="alarm-outline" color={soon ? colors.onBrandPrimary : colors.brandPrimary} size={22} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.productName}>{refill.medicine_name}</Text>
+                  <Text style={styles.muted}>
+                    {refill.for_profile_name ? `For ${refill.for_profile_name} · ` : ""}
+                    {soon ? (days === 0 ? "Due today" : `Due in ${days} day${days === 1 ? "" : "s"}`) : `Refill in ${days} days`}
+                  </Text>
+                </View>
+                <Press testID={`refill-reorder-${refill.id}`} style={styles.primaryButton} onPress={() => onReorderRefill(refill)}>
+                  <Text style={styles.buttonText}>Reorder</Text>
+                </Press>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       <View style={styles.quickGrid}>
         {[["repeat", "Order again", () => onTab("orders")], ["storefront-outline", "Nearby stores", () => onTab("home")], ["pricetag-outline", "Offers", () => onTab("offers")], ["medkit-outline", "Health products", () => onTab("categories")]].map(([icon, label, action]) => (
@@ -630,7 +670,10 @@ function OffersScreen({ offers }: { offers: Offer[] }) {
   );
 }
 
-function AccountScreen({ user, onAddresses, onLogout, onOrders }: { user: User; onAddresses: () => void; onLogout: () => void; onOrders: () => void }) {
+function AccountScreen({ user, onAddresses, onLogout, onOrders, onFamily, familyCount, activeProfile }: {
+  user: User; onAddresses: () => void; onLogout: () => void; onOrders: () => void;
+  onFamily: () => void; familyCount: number; activeProfile: FamilyMember | null;
+}) {
   const styles = useStyles();
   const { colors } = useTheme();
   const initials = user.name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
@@ -647,16 +690,20 @@ function AccountScreen({ user, onAddresses, onLogout, onOrders }: { user: User; 
         <Icon name="chevron-forward" color={colors.brandPrimary} />
       </View>
       {[
-        ["receipt-outline", "My orders", onOrders],
-        ["location-outline", "My addresses", onAddresses],
-        ["card-outline", "Payment methods", () => Alert.alert("Payment methods", "Online payments via Razorpay will be enabled once merchant keys are added.")],
-        ["document-text-outline", "Prescriptions", () => Alert.alert("Prescriptions", "Your pharmacist-reviewed prescriptions will appear here.")],
-        ["help-circle-outline", "Help & support", () => Alert.alert("Support", "Our local care team is here to help.")],
-        ["information-circle-outline", "About Justlocal", () => Alert.alert("Justlocal", "Medicines closer to you.")],
-      ].map(([icon, label, action]) => (
-        <Press key={label as string} style={{ minHeight: 54, borderBottomWidth: 1, borderBottomColor: colors.divider, flexDirection: "row", alignItems: "center", gap: 13 }} onPress={action as () => void}>
+        ["receipt-outline", "My orders", onOrders, undefined],
+        ["people-outline", "Family profiles", onFamily, familyCount > 0 ? `${familyCount} added${activeProfile ? ` · Active: ${activeProfile.name}` : ""}` : "Add parents, kids, or your partner"],
+        ["location-outline", "My addresses", onAddresses, undefined],
+        ["card-outline", "Payment methods", () => Alert.alert("Payment methods", "Online payments via Razorpay will be enabled once merchant keys are added."), undefined],
+        ["document-text-outline", "Prescriptions", () => Alert.alert("Prescriptions", "Your pharmacist-reviewed prescriptions will appear here."), undefined],
+        ["help-circle-outline", "Help & support", () => Alert.alert("Support", "Our local care team is here to help."), undefined],
+        ["information-circle-outline", "About Justlocal", () => Alert.alert("Justlocal", "Medicines closer to you."), undefined],
+      ].map(([icon, label, action, hint]) => (
+        <Press key={label as string} style={{ minHeight: 62, borderBottomWidth: 1, borderBottomColor: colors.divider, flexDirection: "row", alignItems: "center", gap: 13 }} onPress={action as () => void}>
           <View style={styles.iconButton}><Icon name={icon as IconName} size={18} color={colors.brandPrimary} /></View>
-          <Text style={{ color: colors.onSurface, fontSize: 14, fontWeight: "700", flex: 1 }}>{label as string}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: colors.onSurface, fontSize: 14, fontWeight: "700" }}>{label as string}</Text>
+            {hint ? <Text style={[styles.muted, { marginTop: 2 }]} numberOfLines={1}>{hint as string}</Text> : null}
+          </View>
           <Icon name="chevron-forward" size={17} color={colors.muted} />
         </Press>
       ))}
@@ -865,7 +912,7 @@ async function payWithRazorpayWeb(checkout: { key_id: string; razorpay_order_id:
   });
 }
 
-function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders }: { open: boolean; onClose: () => void; cart: CartItem[]; setCart: (c: CartItem[]) => void; user: User; token: string; refreshOrders: () => Promise<void> }) {
+function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders, activeProfile, deliveryAddress }: { open: boolean; onClose: () => void; cart: CartItem[]; setCart: (c: CartItem[]) => void; user: User; token: string; refreshOrders: () => Promise<void>; activeProfile: FamilyMember | null; deliveryAddress: string | null }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const [checkout, setCheckout] = useState(false);
@@ -881,15 +928,16 @@ function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders }:
   }, [open]);
 
   const placeOrder = async () => {
-    const address = user.addresses[0];
-    if (!address) { Alert.alert("Add an address", "Please add a delivery address from Account before checkout."); return; }
+    const address = deliveryAddress ?? user.addresses[0]?.address;
+    if (!address) { Alert.alert("Add an address", "Please add a delivery address before checkout."); return; }
     setPlacing(true);
     try {
       const order = await api.createOrder(token, {
         pharmacy_id: "pharmacy-1",
         items: cart.map((item) => ({ medicine_id: item.id, name: item.name, quantity: item.quantity, price: item.price })),
-        address: address.address, delivery_method: "delivery", subtotal, discount: 0,
+        address, delivery_method: "delivery", subtotal, discount: 0,
         delivery_fee: subtotal >= 299 ? 0 : 29, total,
+        for_profile_id: activeProfile?.id, for_profile_name: activeProfile?.name,
       });
 
       if (paymentMethod === "razorpay") {
@@ -952,13 +1000,22 @@ function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders }:
         </View>
         {checkout ? (
           <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
-            <Text style={styles.sectionTitle}>Delivery address</Text>
-            {user.addresses.length ? (
-              <View style={[styles.addressCard, { marginTop: 12 }]}>
-                <Text style={styles.productName}>{user.addresses[0].label}</Text>
-                <Text style={[styles.body, { marginTop: 5 }]}>{user.addresses[0].address}</Text>
+            {activeProfile ? (
+              <View style={[styles.rxCard, { marginBottom: 12, backgroundColor: colors.brandTertiary }]}>
+                <View style={styles.rxIcon}><Icon name="people" color={colors.brandPrimary} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.productName}>Ordering for {activeProfile.name}</Text>
+                  <Text style={styles.muted}>{activeProfile.relation}{activeProfile.age ? ` · ${activeProfile.age} yrs` : ""}</Text>
+                </View>
               </View>
-            ) : <Empty icon="location-outline" title="Add an address first" copy="Save a delivery address from Account." />}
+            ) : null}
+            <Text style={styles.sectionTitle}>Delivery address</Text>
+            {deliveryAddress || user.addresses.length ? (
+              <View style={[styles.addressCard, { marginTop: 12 }]}>
+                <Text style={styles.productName}>{deliveryAddress ? "Selected location" : user.addresses[0].label}</Text>
+                <Text style={[styles.body, { marginTop: 5 }]}>{deliveryAddress ?? user.addresses[0].address}</Text>
+              </View>
+            ) : <Empty icon="location-outline" title="Add an address first" copy="Save a delivery address from Account or the header." />}
 
             <Text style={[styles.sectionTitle, { marginTop: 22, marginBottom: 12 }]}>Fulfilling pharmacy</Text>
             <View style={styles.addressCard}>
@@ -1043,12 +1100,21 @@ export default function Index() {
   const [showAddresses, setShowAddresses] = useState(false);
   const [showCart, setShowCart] = useState(false);
   const [trackOrder, setTrackOrder] = useState<Order | null>(null);
+  // NEW: location, family, refills
+  const [location, setLocation] = useState<SavedLocation | null>(null);
+  const [showLocation, setShowLocation] = useState(false);
+  const [family, setFamily] = useState<FamilyMember[]>([]);
+  const [activeProfile, setActiveProfile] = useState<FamilyMember | null>(null);
+  const [showFamily, setShowFamily] = useState(false);
+  const [refills, setRefills] = useState<Refill[]>([]);
 
   const loadData = async (authToken: string) => {
-    const [cats, meds, stores, deals, userOrders] = await Promise.all([
-      api.categories(), api.medicines(), api.pharmacies(), api.offers(), api.orders(authToken),
+    const [cats, meds, stores, deals, userOrders, fam, rx] = await Promise.all([
+      api.categories(), api.medicines(), api.pharmacies(), api.offers(),
+      api.orders(authToken), api.listFamily(authToken), api.listRefills(authToken),
     ]);
     setCategories(cats); setMedicines(meds); setPharmacies(stores); setOffers(deals); setOrders(userOrders);
+    setFamily(fam); setRefills(rx);
   };
 
   // Deep-link session_id capture for Google OAuth callback
@@ -1065,6 +1131,8 @@ export default function Index() {
       } else {
         handleUrl(await Linking.getInitialURL());
       }
+      const savedLocation = await loadSavedLocation();
+      if (savedLocation && mounted) setLocation(savedLocation);
       const stored = await storage.secureGet("justlocal_token", null);
       if (stored) {
         try {
@@ -1135,7 +1203,27 @@ export default function Index() {
     );
   }
 
-  const refreshOrders = async () => setOrders(await api.orders(token));
+  const refreshOrders = async () => {
+    const [nextOrders, nextRefills] = await Promise.all([api.orders(token), api.listRefills(token)]);
+    setOrders(nextOrders); setRefills(nextRefills);
+  };
+
+  const reorderRefill = async (refill: Refill) => {
+    try {
+      await api.reorderRefill(token, refill.id, {
+        address: location?.address ?? user.addresses[0]?.address,
+        for_profile_id: refill.for_profile_id ?? activeProfile?.id,
+      });
+      await refreshOrders();
+      Alert.alert("Reordered", `${refill.medicine_name} has been sent to the pharmacy.`);
+    } catch (err) {
+      if (err instanceof Error && err.message.toLowerCase().includes("address")) {
+        Alert.alert("Add an address", "Tap the location card to set a delivery address first.");
+      } else {
+        Alert.alert("Reorder failed", err instanceof Error ? err.message : "Please try again.");
+      }
+    }
+  };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
@@ -1150,6 +1238,8 @@ export default function Index() {
             onCart={() => setShowCart(true)}
             cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)}
             search={search} setSearch={setSearch}
+            location={location} onLocation={() => setShowLocation(true)}
+            refills={refills} activeProfile={activeProfile} onReorderRefill={reorderRefill}
           />
         )}
         {tab === "categories" && (
@@ -1164,7 +1254,9 @@ export default function Index() {
         )}
         {tab === "offers" && <OffersScreen offers={offers} />}
         {tab === "account" && (
-          <AccountScreen user={user} onAddresses={() => setShowAddresses(true)} onOrders={() => setTab("orders")} onLogout={logout} />
+          <AccountScreen user={user} onAddresses={() => setShowAddresses(true)} onOrders={() => setTab("orders")} onLogout={logout}
+            onFamily={() => setShowFamily(true)} familyCount={family.length} activeProfile={activeProfile}
+          />
         )}
       </View>
 
@@ -1194,7 +1286,9 @@ export default function Index() {
       </View>
 
       <ProductModal product={product} onClose={() => setProduct(null)} onAdd={addToCart} />
-      <CartModal open={showCart} onClose={() => setShowCart(false)} cart={cart} setCart={setCart} user={user} token={token} refreshOrders={refreshOrders} />
+      <CartModal open={showCart} onClose={() => setShowCart(false)} cart={cart} setCart={setCart} user={user} token={token} refreshOrders={refreshOrders} activeProfile={activeProfile} deliveryAddress={location?.address ?? null} />
+      <LocationModal visible={showLocation} onClose={() => setShowLocation(false)} onPick={(loc) => { setLocation(loc); setShowLocation(false); }} current={location} />
+      <FamilyModal visible={showFamily} onClose={() => setShowFamily(false)} token={token} activeId={activeProfile?.id ?? null} members={family} onChange={setFamily} onPick={(member) => { setActiveProfile(member); setShowFamily(false); }} />
       {showUpload && <UploadModal token={token} onClose={() => setShowUpload(false)} />}
       {showAddresses && (
         <Modal visible animationType="slide" onRequestClose={() => setShowAddresses(false)}>
