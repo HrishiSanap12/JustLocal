@@ -78,6 +78,7 @@ const useStyles = makeStyles((colors) => ({
   navActive: { color: colors.brandPrimary },
 
   // ------------ AUTH SCREEN ------------
+  
   authRoot: { flex: 1, backgroundColor: colors.surface },
   authHero: { paddingTop: 36, paddingBottom: 26, paddingHorizontal: 24, alignItems: "center" },
   authTagPill: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: colors.surface, borderRadius: 999, marginTop: 16, borderWidth: 1, borderColor: colors.brandTertiary },
@@ -161,6 +162,32 @@ function Press({ children, onPress, style, disabled = false, testID }: { childre
 }
 
 // ----------------- AUTH SCREEN -----------------
+function InputField({
+  icon,
+  ...rest
+}: { icon: IconName } & React.ComponentProps<typeof TextInput>) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const [focused, setFocused] = useState(false);
+
+  return (
+    <View style={[styles.inputWrap, focused && styles.inputWrapFocus]}>
+      <Icon
+        name={icon}
+        size={18}
+        color={focused ? colors.brandPrimary : colors.muted}
+      />
+
+      <TextInput
+        {...rest}
+        style={styles.inputField}
+        placeholderTextColor={colors.muted}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+      />
+    </View>
+  );
+}
 function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: User) => void; prefillSession?: string | null }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -173,6 +200,18 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
   const [socialLoading, setSocialLoading] = useState<"google" | "apple" | null>(null);
   const [error, setError] = useState("");
   const [appleAvailable, setAppleAvailable] = useState(false);
+
+  const completeAuth = async (nextToken: unknown, nextUser: unknown) => {
+    if (typeof nextToken !== "string" || !nextToken.trim()) {
+      throw new Error("The server did not return a valid sign-in token.");
+    }
+    if (!nextUser || typeof nextUser !== "object") {
+      throw new Error("The server did not return valid account details.");
+    }
+    const saved = await storage.secureSet("justlocal_token", nextToken);
+    if (!saved) throw new Error("Unable to save your sign-in session.");
+    onAuth(nextToken, nextUser as User);
+  };
 
   useEffect(() => {
     if (Platform.OS === "ios") {
@@ -188,8 +227,7 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
       setError("");
       try {
         const { session_token, user } = await api.exchangeSession(prefillSession);
-        await storage.secureSet("justlocal_token", session_token);
-        onAuth(session_token, user);
+        await completeAuth(session_token, user);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Google sign-in failed. Please try again.");
       } finally {
@@ -203,8 +241,7 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
     setError("");
     try {
       const result = mode === "login" ? await api.login(identifier, password) : await api.register(name, identifier, phone, password);
-      await storage.secureSet("justlocal_token", result.token);
-      onAuth(result.token, result.user);
+      await completeAuth(result.token, result.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to continue");
     } finally {
@@ -222,8 +259,7 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
         return; // user cancelled or web redirect in progress
       }
       const { session_token, user } = await api.exchangeSession(social.session_id);
-      await storage.secureSet("justlocal_token", session_token);
-      onAuth(session_token, user);
+      await completeAuth(session_token, user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google sign-in failed");
     } finally {
@@ -238,8 +274,7 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
       const social = await signInWithApple();
       if (!social?.identity_token) return;
       const { token, user } = await api.apple(social.identity_token, social.name, social.email);
-      await storage.secureSet("justlocal_token", token);
-      onAuth(token, user);
+      await completeAuth(token, user);
     } catch (err) {
       if ((err as { code?: string })?.code === "ERR_REQUEST_CANCELED") return;
       setError(err instanceof Error ? err.message : "Apple sign-in failed");
@@ -248,21 +283,7 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
     }
   };
 
-  const InputField = ({ icon, ...rest }: { icon: IconName } & React.ComponentProps<typeof TextInput>) => {
-    const [focused, setFocused] = useState(false);
-    return (
-      <View style={[styles.inputWrap, focused && styles.inputWrapFocus]}>
-        <Icon name={icon} size={18} color={focused ? colors.brandPrimary : colors.muted} />
-        <TextInput
-          {...rest}
-          style={styles.inputField}
-          placeholderTextColor={colors.muted}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-        />
-      </View>
-    );
-  };
+  
 
   return (
     <KeyboardAvoidingView style={styles.authRoot} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -1163,7 +1184,7 @@ export default function Index() {
   }, [user]);
 
   const visibleMedicines = useMemo(
-    () => medicines.filter((item) => (!categoryFilter || item.category === categoryFilter) && (!search || item.name.toLowerCase().includes(search.toLowerCase()) || item.category.toLowerCase().includes(search.toLowerCase()))),
+    () => (Array.isArray(medicines) ? medicines : []).filter((item) => (!categoryFilter || item.category === categoryFilter) && (!search || item.name.toLowerCase().includes(search.toLowerCase()) || item.category.toLowerCase().includes(search.toLowerCase()))),
     [medicines, categoryFilter, search]
   );
 

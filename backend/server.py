@@ -9,7 +9,10 @@ import logging
 import os
 import re
 import uuid
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 import bcrypt
 import httpx
 import jwt
@@ -239,7 +242,7 @@ async def seed_database() -> None:
     if not demo:
         demo = {
             "id": "user-demo",
-            "name": "Aarav Mehta",
+            "name": "Hrishikesh Sanap",
             "email": demo_email,
             "phone": "+91 98765 43210",
             "password_hash": bcrypt.hashpw(b"Justlocal123!", bcrypt.gensalt()).decode(),
@@ -247,6 +250,9 @@ async def seed_database() -> None:
             "created_at": now_iso(),
         }
         await db.users.insert_one(demo)
+    else:
+        # Keep the existing seeded demo account aligned with its current profile.
+        await db.users.update_one({"id": demo["id"]}, {"$set": {"name": "Hrishikesh Sanap"}})
     if await db.orders.count_documents({"user_id": "user-demo"}) == 0:
         await db.orders.insert_one({
             "id": "order-demo-1", "user_id": "user-demo", "order_number": "JL240921873", "pharmacy_id": "pharmacy-1",
