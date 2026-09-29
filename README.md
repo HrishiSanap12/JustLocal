@@ -12,6 +12,7 @@ Built with Expo (React Native) · FastAPI · MongoDB.
 - [Features](#-features)
 - [Tech stack](#️-tech-stack)
 - [Project structure](#-project-structure)
+- [Architecture](docs/architecture.md)
 - [Getting started (local)](#-getting-started-local)
 - [Environment variables](#-environment-variables)
 - [API reference](#-api-reference)
@@ -77,7 +78,8 @@ Built with Expo (React Native) · FastAPI · MongoDB.
 
 ### Prescription upload
 - `expo-image-picker` gallery selection.
-- Multipart upload to `/api/prescriptions`; pharmacist-review status.
+- Multipart upload to `/api/prescriptions`; customer consent is required before sharing it with matched pharmacies.
+- Requests go to up to five nearest verified pharmacies whose carry lists match. Pharmacists review prescriptions manually and send offers; the customer selects an offer before an order is created.
 
 ### Orders
 - Tabs: All / Ongoing / Delivered / Cancelled.
@@ -121,9 +123,10 @@ Built with Expo (React Native) · FastAPI · MongoDB.
 ```
 app/
 ├── backend/
-│   ├── server.py              # all FastAPI routes
+│   ├── server.py              # customer API, app entry point, database setup
+│   ├── pharmacy_routes.py     # pharmacist auth, carry lists, requests, offers, orders
 │   ├── requirements.txt
-│   ├── tests/                 # pytest suite (30/30 green)
+│   ├── tests/                 # pytest suite and pharmacy integration test
 │   └── .env                   # secrets (git-ignored)
 ├── frontend/
 │   ├── app/
@@ -140,6 +143,7 @@ app/
 │   │   └── utils/storage/     # AsyncStorage + SecureStore wrapper
 │   ├── app.json               # bundle IDs, permissions, plugins
 │   └── package.json
+├── pharmacist-web/            # responsive pharmacist website
 ├── docs/
 │   └── screenshots/           # README screenshots
 ├── memory/
@@ -183,6 +187,17 @@ yarn expo start
 ```
 Scan the QR with Expo Go, or press `w` for web, `i` for iOS simulator, `a` for Android emulator.
 
+### 4. Pharmacist website (prototype)
+```bash
+cd ../pharmacist-web
+npm install
+npm run dev
+```
+
+Open <http://localhost:5174>. It defaults to the local API at `http://127.0.0.1:8001/api`; set `VITE_API_URL` in `pharmacist-web/.env.local` when using another backend. Without signing in, the website shows clearly labeled sample data. New pharmacy registrations remain pending until manually verified.
+
+The local backend must have `PHARMACY_ADMIN_TOKEN` set in `backend/.env` before an admin can review applications. The protected admin endpoints are `GET /api/admin/pharmacies/pending` and `POST /api/admin/pharmacies/{pharmacy_id}/verify`, using the `X-Pharmacy-Admin-Token` header. Keep this token on the server; never add it to the website environment.
+
 ---
 
 ## 🔐 Environment variables
@@ -192,6 +207,7 @@ Scan the QR with Expo Go, or press `w` for web, `i` for iOS simulator, `a` for A
 MONGO_URL=mongodb://localhost:27017
 DB_NAME=justlocal
 JWT_SECRET=change-me-to-a-long-random-string
+PHARMACY_ADMIN_TOKEN=generate-a-long-random-secret
 
 # Apple Sign-In — comma separated. First entry MUST match your iOS bundle id.
 APPLE_AUDIENCES=com.example.justlocal,host.exp.Exponent
@@ -233,10 +249,28 @@ Base URL: `<host>/api`
 | GET | `/pharmacies` | — |
 | GET | `/offers` | — |
 
+### Customer requests and pharmacist workflow
+| Method | Path | Auth | Notes |
+| :--- | :--- | :---: | :--- |
+| POST | `/medicine-requests` | Customer | Requires location and explicit prescription-sharing consent when applicable; dispatches to up to 5 nearest verified pharmacies whose carry lists match |
+| GET | `/medicine-requests` | Customer | Lists owned requests and pharmacy responses |
+| POST | `/medicine-requests/{request_id}/select-offer` | Customer | Creates an order only from an available, unexpired offer |
+| POST | `/pharmacist/auth/register` | — | Submits a pharmacy for manual verification |
+| POST | `/pharmacist/auth/login` | — | Pharmacist-only authentication; verified account required |
+| GET | `/pharmacist/requests` | Pharmacist | Returns only that pharmacy's assigned requests |
+| GET | `/pharmacist/requests/{request_id}/prescription` | Pharmacist | Requires assignment and customer consent; logs access |
+| POST | `/pharmacist/requests/{request_id}/prescription-review` | Pharmacist | Records pharmacist decision: matches, clarification, or not approved |
+| POST | `/pharmacist/requests/{request_id}/offer` | Pharmacist | Confirms current availability and sends price/ETA |
+| GET / POST / PATCH | `/pharmacist/carry-list` | Pharmacist | Manages carried products and price; does not store stock counts |
+| GET | `/pharmacist/orders` | Pharmacist | Orders from offers selected by customers |
+
+Pharmacy registration creates a pending account. Configure `PHARMACY_ADMIN_TOKEN` on the server and use the protected admin verification endpoints described in the setup section before testing pharmacist login.
+
 ### Orders / prescriptions / addresses
 | Method | Path | Auth |
 | :--- | :--- | :---: |
-| GET / POST | `/orders` | ✅ |
+| GET | `/orders` | ✅ | Customer order history |
+| POST | `/orders` | ✅ | Returns 409; create orders by selecting an offer |
 | POST | `/prescriptions` (multipart) | ✅ |
 | POST | `/addresses` | ✅ |
 
@@ -250,7 +284,9 @@ Base URL: `<host>/api`
 | Method | Path | Auth |
 | :--- | :--- | :---: |
 | GET | `/refills` | ✅ |
-| POST | `/refills/{refill_id}/reorder` | ✅ |
+| POST | `/refills/{refill_id}/reorder` | ✅ (409) |
+
+Direct order creation and the legacy direct refill reorder return `409`; customer orders must be created by selecting an available pharmacy offer. The customer app resubmits refills through a new medicine request and requires a fresh prescription where applicable.
 
 ### Payments (Razorpay)
 | Method | Path | Auth |
@@ -296,7 +332,7 @@ Backend has a pytest suite (`backend/tests/`). Run:
 ```bash
 cd backend
 pytest -q
-# 30 passed
+# 31 passed with local pharmacist integration settings; otherwise the opt-in integration test skips
 ```
 
 Frontend E2E was verified via Playwright against the preview URL. Screenshots in `/docs/screenshots/` are captured automatically.

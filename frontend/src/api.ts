@@ -10,11 +10,23 @@ export type Category = { id: string; name: string; icon: string; group: string; 
 export type Pharmacy = { id: string; name: string; area: string; distance: string; eta: string; rating: number; reviews: string; threshold: number; status: string };
 export type Offer = { id: string; title: string; subtitle: string; code: string; detail: string; accent: string };
 export type CartItem = Medicine & { quantity: number };
-export type OrderItem = { medicine_id: string; name: string; quantity: number; price: number };
+export type OrderItem = { medicine_id?: string | null; name: string; quantity: number; price: number };
 export type Order = {
   id: string; order_number: string; pharmacy_id?: string; pharmacy_name: string;
   items: OrderItem[]; address: string; total: number; status: string; created_at: string;
   eta: string; timeline: string[]; payment_status?: string;
+};
+export type MedicineRequestItem = { medicine_id?: string | null; requested_name?: string; name: string; pack: string; quantity: number; prescription_required: boolean; custom?: boolean };
+export type PharmacyOfferItem = { medicine_id?: string | null; requested_name?: string | null; name: string; pack: string; quantity: number; unit_price: number; total: number };
+export type PharmacyOffer = {
+  id: string; pharmacy_id: string; pharmacy_name: string; area: string; distance_km?: number;
+  availability: "available" | "partial" | "unavailable"; prescription_decision?: "matches" | "clarification" | "not-approved" | null;
+  items: PharmacyOfferItem[]; subtotal: number; delivery_fee: number; total: number; eta_minutes: number;
+  note?: string | null; status: string; created_at: string; expires_at: string;
+};
+export type MedicineRequest = {
+  id: string; status: string; items: MedicineRequestItem[]; prescription_id?: string | null;
+  matched_pharmacy_count: number; created_at: string; expires_at?: string; offers: PharmacyOffer[];
 };
 export type RazorpayCheckout = {
   order_id: string;
@@ -50,6 +62,9 @@ export const api = {
   pharmacies: () => request<Pharmacy[]>("/pharmacies"),
   offers: () => request<Offer[]>("/offers"),
   orders: (token: string) => request<Order[]>("/orders", {}, token),
+  medicineRequests: (token: string) => request<MedicineRequest[]>("/medicine-requests", {}, token),
+  createMedicineRequest: (token: string, body: object) => request<MedicineRequest>("/medicine-requests", { method: "POST", body: JSON.stringify(body) }, token),
+  selectMedicineOffer: (token: string, requestId: string, offerId: string, payment_method: "cod" | "razorpay" = "cod") => request<Order>(`/medicine-requests/${requestId}/select-offer`, { method: "POST", body: JSON.stringify({ offer_id: offerId, payment_method }) }, token),
   createOrder: (token: string, body: object) => request<Order>("/orders", { method: "POST", body: JSON.stringify(body) }, token),
   addAddress: (token: string, body: object) => request<Address>("/addresses", { method: "POST", body: JSON.stringify(body) }, token),
   listFamily: (token: string) => request<FamilyMember[]>("/family", {}, token),

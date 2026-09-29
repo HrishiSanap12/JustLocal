@@ -23,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
+from pharmacy_routes import build_pharmacy_router
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -229,6 +231,10 @@ async def seed_database() -> None:
             {"id": "pharmacy-2", "name": "MedPlus", "area": "Thane West", "distance": "2.4 km", "eta": "15–20 min", "rating": 4.4, "reviews": "980", "threshold": 199, "status": "Open"},
             {"id": "pharmacy-3", "name": "Sun Pharma Store", "area": "Kasarvadavali", "distance": "3.1 km", "eta": "20–25 min", "rating": 4.5, "reviews": "640", "threshold": 299, "status": "Open"},
         ])
+    await db.pharmacies.update_many(
+        {"verification_status": {"$exists": False}},
+        {"$set": {"verification_status": "verified", "accepting_requests": False}},
+    )
 
     if await db.offers.count_documents({}) == 0:
         await db.offers.insert_many([
@@ -265,6 +271,20 @@ async def seed_database() -> None:
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.users.create_index("apple_sub", unique=True, sparse=True)
+    await db.pharmacist_accounts.create_index("email", unique=True)
+    await db.pharmacist_sessions.create_index("id", unique=True)
+    await db.pharmacist_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.pharmacies.create_index("license_number", unique=True, sparse=True)
+    await db.pharmacies.create_index([("geo_location", "2dsphere")])
+    await db.pharmacy_carry_list.create_index([("pharmacy_id", 1), ("medicine_id", 1)], unique=True)
+    await db.medicine_requests.create_index("id", unique=True)
+    await db.medicine_requests.create_index([("user_id", 1), ("created_at", -1)])
+    await db.pharmacy_request_assignments.create_index("id", unique=True)
+    await db.pharmacy_request_assignments.create_index([("request_id", 1), ("pharmacy_id", 1)], unique=True)
+    await db.pharmacy_request_assignments.create_index([("pharmacy_id", 1), ("status", 1)])
+    await db.pharmacy_offers.create_index("id", unique=True)
+    await db.pharmacy_offers.create_index([("request_id", 1), ("pharmacy_id", 1)], unique=True)
+    await db.orders.create_index("offer_id", unique=True, sparse=True)
 
 
 @app.on_event("startup")
@@ -441,7 +461,7 @@ async def medicines(category: Optional[str] = None, search: Optional[str] = None
 
 @api_router.get("/pharmacies")
 async def pharmacies() -> list:
-    return await db.pharmacies.find({}, {"_id": 0}).to_list(50)
+    return await db.pharmacies.find({"verification_status": "verified"}, {"_id": 0}).to_list(50)
 
 
 @api_router.get("/offers")
@@ -457,44 +477,7 @@ async def orders(user: dict = Depends(current_user)) -> list:
 
 @api_router.post("/orders")
 async def create_order(payload: OrderCreate, user: dict = Depends(current_user)) -> dict:
-    pharmacy = await db.pharmacies.find_one({"id": payload.pharmacy_id}, {"_id": 0})
-    document = {
-        "id": f"order-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
-        "order_number": f"JL{datetime.now(timezone.utc).strftime('%y%m%d')}{uuid.uuid4().hex[:3].upper()}",
-        "pharmacy_id": payload.pharmacy_id, "pharmacy_name": pharmacy["name"] if pharmacy else "Local pharmacy",
-        "items": [item.model_dump() for item in payload.items],
-        "address": payload.address, "delivery_method": payload.delivery_method, "subtotal": payload.subtotal,
-        "discount": payload.discount, "delivery_fee": payload.delivery_fee, "total": payload.total,
-        "for_profile_id": payload.for_profile_id, "for_profile_name": payload.for_profile_name,
-        "payment_status": "pending", "status": "Order Placed", "created_at": now_iso(),
-        "eta": "Arriving in 25–35 min",
-        "timeline": ["Order Placed", "Pharmacy Confirmed", "Preparing", "Out for Delivery", "Delivered"],
-    }
-    await db.orders.insert_one(document)
-
-    # Auto-create refill reminders for any prescription medicine in this order
-    prescription_ids = [item.medicine_id for item in payload.items]
-    if prescription_ids:
-        rx = await db.medicines.find({"id": {"$in": prescription_ids}, "prescription_required": True}, {"_id": 0}).to_list(50)
-        rx_by_id = {m["id"]: m for m in rx}
-        refills = []
-        for item in payload.items:
-            medicine = rx_by_id.get(item.medicine_id)
-            if not medicine:
-                continue
-            due = datetime.now(timezone.utc) + timedelta(days=30)
-            refills.append({
-                "id": f"refill-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
-                "medicine_id": item.medicine_id, "medicine_name": item.name, "quantity": item.quantity, "price": item.price,
-                "pharmacy_id": payload.pharmacy_id, "pharmacy_name": pharmacy["name"] if pharmacy else "Local pharmacy",
-                "for_profile_id": payload.for_profile_id, "for_profile_name": payload.for_profile_name,
-                "last_order_id": document["id"], "next_refill_at": due.isoformat(), "status": "upcoming",
-                "created_at": now_iso(),
-            })
-        if refills:
-            await db.refills.insert_many(refills)
-
-    return {key: value for key, value in document.items() if key not in {"_id", "user_id"}}
+    raise HTTPException(status_code=409, detail="Direct orders are disabled. Submit a medicine request and choose a pharmacist offer.")
 
 
 @api_router.post("/prescriptions")
@@ -556,52 +539,9 @@ async def list_refills(user: dict = Depends(current_user)) -> list:
 
 @api_router.post("/refills/{refill_id}/reorder")
 async def reorder_refill(refill_id: str, payload: RefillReorderInput, user: dict = Depends(current_user)) -> dict:
-    refill = await db.refills.find_one({"id": refill_id, "user_id": user["id"]}, {"_id": 0})
-    if not refill:
+    if not await db.refills.find_one({"id": refill_id, "user_id": user["id"]}, {"_id": 1}):
         raise HTTPException(status_code=404, detail="Refill not found")
-    address = payload.address or (user.get("addresses") or [{}])[0].get("address")
-    if not address:
-        raise HTTPException(status_code=400, detail="Add a delivery address before reordering")
-
-    subtotal = float(refill["price"]) * int(refill["quantity"])
-    delivery_fee = 0 if subtotal >= 299 else 29
-    total = subtotal + delivery_fee
-    pharmacy = await db.pharmacies.find_one({"id": refill.get("pharmacy_id")}, {"_id": 0})
-    for_profile_name = payload.for_profile_id and next(
-        (m["name"] for m in user.get("family_members", []) if m["id"] == payload.for_profile_id), None
-    )
-
-    document = {
-        "id": f"order-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
-        "order_number": f"JL{datetime.now(timezone.utc).strftime('%y%m%d')}{uuid.uuid4().hex[:3].upper()}",
-        "pharmacy_id": refill.get("pharmacy_id") or "pharmacy-1",
-        "pharmacy_name": pharmacy["name"] if pharmacy else refill.get("pharmacy_name") or "Local pharmacy",
-        "items": [{"medicine_id": refill["medicine_id"], "name": refill["medicine_name"], "quantity": int(refill["quantity"]), "price": float(refill["price"])}],
-        "address": address, "delivery_method": "delivery", "subtotal": subtotal, "discount": 0,
-        "delivery_fee": delivery_fee, "total": total,
-        "for_profile_id": payload.for_profile_id, "for_profile_name": for_profile_name,
-        "payment_status": "pending", "status": "Order Placed", "created_at": now_iso(),
-        "eta": "Arriving in 25–35 min",
-        "timeline": ["Order Placed", "Pharmacy Confirmed", "Preparing", "Out for Delivery", "Delivered"],
-    }
-    await db.orders.insert_one(document)
-
-    # Push the next refill date 30 days out and mark this reminder handled
-    next_due = datetime.now(timezone.utc) + timedelta(days=30)
-    await db.refills.update_one(
-        {"id": refill_id, "user_id": user["id"]},
-        {"$set": {"status": "reordered", "reordered_at": now_iso(), "last_order_id": document["id"]}},
-    )
-    await db.refills.insert_one({
-        "id": f"refill-{uuid.uuid4().hex[:10]}", "user_id": user["id"],
-        "medicine_id": refill["medicine_id"], "medicine_name": refill["medicine_name"],
-        "quantity": int(refill["quantity"]), "price": float(refill["price"]),
-        "pharmacy_id": refill.get("pharmacy_id"), "pharmacy_name": refill.get("pharmacy_name"),
-        "for_profile_id": payload.for_profile_id, "for_profile_name": for_profile_name,
-        "last_order_id": document["id"], "next_refill_at": next_due.isoformat(), "status": "upcoming",
-        "created_at": now_iso(),
-    })
-    return {key: value for key, value in document.items() if key not in {"_id", "user_id"}}
+    raise HTTPException(status_code=409, detail="Refills must be resubmitted as a medicine request and rechecked by a pharmacist")
 
 
 # ---------------- Razorpay ----------------
@@ -672,6 +612,7 @@ async def razorpay_webhook(request: Request) -> dict:
 
 
 app.include_router(api_router)
+app.include_router(build_pharmacy_router(db=db, jwt_secret=JWT_SECRET, now_iso=now_iso, customer_dependency=current_user))
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

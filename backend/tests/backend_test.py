@@ -130,16 +130,8 @@ class TestOrders:
             "subtotal": 50, "discount": 0, "delivery_fee": 0, "total": 50,
         }
         r = requests.post(f"{API}/orders", json=payload, headers={"Authorization": f"Bearer {demo_token}"}, timeout=15)
-        assert r.status_code == 200, r.text
-        created = r.json()
-        assert created["pharmacy_name"] == "Apollo Pharmacy"
-        assert created["status"] == "Order Placed"
-        assert "_id" not in created and "user_id" not in created
-        order_id = created["id"]
-
-        # verify persistence via GET
-        r2 = requests.get(f"{API}/orders", headers={"Authorization": f"Bearer {demo_token}"}, timeout=10)
-        assert any(o["id"] == order_id for o in r2.json())
+        assert r.status_code == 409, r.text
+        assert "choose a pharmacist offer" in r.json().get("detail", "")
 
 
 # --- Addresses ---

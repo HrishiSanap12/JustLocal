@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Address, api, CartItem, Category, FamilyMember, Medicine, Offer, Order, Pharmacy, Refill, SavedLocation, User } from "@/src/api";
+import { Address, api, CartItem, Category, FamilyMember, Medicine, MedicineRequest, Order, Pharmacy, Refill, SavedLocation, User } from "@/src/api";
 import { CapsulePill, Wordmark } from "@/src/components/capsule-pill";
 import { FamilyModal } from "@/src/components/family-modal";
 import { LocationModal, loadSavedLocation } from "@/src/components/location-modal";
@@ -17,7 +17,7 @@ import { makeStyles, useTheme } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
-type Tab = "home" | "categories" | "orders" | "offers" | "account";
+type Tab = "home" | "categories" | "requests" | "orders" | "account";
 
 const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.surface },
@@ -199,8 +199,8 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
   const [loading, setLoading] = useState(false);
   const [socialLoading, setSocialLoading] = useState<"google" | "apple" | null>(null);
   const [error, setError] = useState("");
-  const [appleAvailable, setAppleAvailable] = useState(false);
-
+        {[ ["repeat", "Order again", () => onTab("orders")], ["storefront-outline", "Nearby stores", () => onTab("home")], ["receipt-outline", "My requests", () => onTab("requests")], ["medkit-outline", "Health products", () => onTab("categories")] ].map(([icon, label, action]) => (
+          {[ ["repeat", "Order again", () => onTab("orders")], ["storefront-outline", "Nearby stores", () => onTab("home")], ["receipt-outline", "My requests", () => onTab("requests")], ["medkit-outline", "Health products", () => onTab("categories")] ].map(([icon, label, action]) => (
   const completeAuth = async (nextToken: unknown, nextUser: unknown) => {
     if (typeof nextToken !== "string" || !nextToken.trim()) {
       throw new Error("The server did not return a valid sign-in token.");
@@ -443,12 +443,12 @@ function Empty({ icon, title, copy }: { icon: IconName; title: string; copy: str
 }
 
 // ----------------- SCREENS -----------------
-function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription, onCategory, onProduct, onAdd, onCart, search, setSearch, cartCount, location, onLocation, refills, activeProfile, onReorderRefill }: {
-  categories: Category[]; pharmacies: Pharmacy[]; offers: Offer[]; medicines: Medicine[]; onTab: (t: Tab) => void;
+function Home({ categories, pharmacies, medicines, onTab, onPrescription, onCategory, onProduct, onAdd, onCart, search, setSearch, cartCount, location, onLocation, refills, activeProfile, onReorderRefill, onRequestMedicine, now }: {
+  categories: Category[]; pharmacies: Pharmacy[]; medicines: Medicine[]; onTab: (t: Tab) => void;
   onPrescription: () => void; onCategory: (c: string) => void; onProduct: (m: Medicine) => void; onAdd: (m: Medicine) => void;
   onCart: () => void; search: string; setSearch: (v: string) => void; cartCount: number;
   location: SavedLocation | null; onLocation: () => void;
-  refills: Refill[]; activeProfile: FamilyMember | null; onReorderRefill: (r: Refill) => void;
+  refills: Refill[]; activeProfile: FamilyMember | null; onReorderRefill: (r: Refill) => void; onRequestMedicine: (name: string) => void; now: number | null;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -487,6 +487,14 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
         <Icon name="mic-outline" color={colors.brandPrimary} />
       </View>
 
+      {search.trim().length > 1 && medicines.length === 0 && (
+        <Press onPress={() => onRequestMedicine(search.trim())} style={[styles.rxCard, { marginBottom: 15 }]}>
+          <View style={styles.rxIcon}><Icon name="help-circle-outline" color={colors.brandPrimary} size={22} /></View>
+          <View style={{ flex: 1 }}><Text style={styles.productName}>Can&apos;t find “{search.trim()}”?</Text><Text style={styles.muted}>Request it from nearby pharmacies</Text></View>
+          <Icon name="chevron-forward" color={colors.brandPrimary} />
+        </Press>
+      )}
+
       <Press style={styles.hero} onPress={() => onTab("categories")}>
         <LinearGradient colors={[colors.brandTertiary, colors.surfaceTertiary]} style={styles.heroInner}>
           <View>
@@ -519,8 +527,8 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
             <Press onPress={() => onTab("orders")}><Text style={styles.link}>All refills →</Text></Press>
           </View>
           {refills.slice(0, 2).map((refill) => {
-            const days = Math.max(0, Math.ceil((new Date(refill.next_refill_at).getTime() - Date.now()) / 86400000));
-            const soon = days <= 3;
+            const days = now === null ? null : Math.max(0, Math.ceil((new Date(refill.next_refill_at).getTime() - now) / 86400000));
+            const soon = days !== null && days <= 3;
             return (
               <View key={refill.id} style={[styles.rxCard, { marginBottom: 10, backgroundColor: soon ? colors.brandTertiary : colors.surfaceSecondary }]}>
                 <View style={[styles.rxIcon, { backgroundColor: soon ? colors.brandPrimary : colors.brandTertiary }]}>
@@ -530,7 +538,7 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
                   <Text style={styles.productName}>{refill.medicine_name}</Text>
                   <Text style={styles.muted}>
                     {refill.for_profile_name ? `For ${refill.for_profile_name} · ` : ""}
-                    {soon ? (days === 0 ? "Due today" : `Due in ${days} day${days === 1 ? "" : "s"}`) : `Refill in ${days} days`}
+                    {days === null ? "Upcoming refill" : soon ? (days === 0 ? "Due today" : `Due in ${days} day${days === 1 ? "" : "s"}`) : `Refill in ${days} days`}
                   </Text>
                 </View>
                 <Press testID={`refill-reorder-${refill.id}`} style={styles.primaryButton} onPress={() => onReorderRefill(refill)}>
@@ -550,15 +558,6 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
           </Press>
         ))}
       </View>
-
-      {offers[0] && (
-        <Press style={styles.promo} onPress={() => onTab("offers")}>
-          <LinearGradient colors={[colors.surfaceTertiary, colors.brandTertiary]} style={styles.promoInner}>
-            <Text style={styles.promoTitle}>{offers[0].title}</Text>
-            <Text style={styles.promoCopy}>{offers[0].subtitle} · Use code {offers[0].code}</Text>
-          </LinearGradient>
-        </Press>
-      )}
 
       <View style={[styles.rowBetween, { marginBottom: 13 }]}>
         <Text style={styles.sectionTitle}>Shop by category</Text>
@@ -592,10 +591,9 @@ function Home({ categories, pharmacies, offers, medicines, onTab, onPrescription
   );
 }
 
-function CategoriesScreen({ categories, medicines, onProduct, onAdd, onCategory }: { categories: Category[]; medicines: Medicine[]; onProduct: (m: Medicine) => void; onAdd: (m: Medicine) => void; onCategory: (c: string) => void }) {
+function CategoriesScreen({ categories, medicines, search, onSearch, onProduct, onAdd, onCategory, onRequestMedicine }: { categories: Category[]; medicines: Medicine[]; search: string; onSearch: (value: string) => void; onProduct: (m: Medicine) => void; onAdd: (m: Medicine) => void; onCategory: (c: string) => void; onRequestMedicine: (name: string) => void }) {
   const styles = useStyles();
   const { colors } = useTheme();
-  const [search, setSearch] = useState("");
   const filtered = categories.filter((item) => item.name.toLowerCase().includes(search.toLowerCase()));
   return (
     <ScrollView style={styles.content} contentContainerStyle={styles.scroll}>
@@ -603,7 +601,7 @@ function CategoriesScreen({ categories, medicines, onProduct, onAdd, onCategory 
       <Text style={[styles.body, { marginTop: 5, marginBottom: 16 }]}>Find everyday care from nearby stores.</Text>
       <View style={styles.search}>
         <Icon name="search" color={colors.muted} />
-        <TextInput style={styles.searchInput} placeholder="Search medicines or categories" placeholderTextColor={colors.muted} value={search} onChangeText={setSearch} />
+        <TextInput style={styles.searchInput} placeholder="Search medicines or categories" placeholderTextColor={colors.muted} value={search} onChangeText={onSearch} />
       </View>
       <LinearGradient colors={[colors.brandTertiary, colors.surfaceTertiary]} style={[styles.promo, { padding: 18 }]}>
         <Text style={styles.heroTitle}>Healthier you, everyday</Text>
@@ -619,9 +617,68 @@ function CategoriesScreen({ categories, medicines, onProduct, onAdd, onCategory 
           </Press>
         ))}
       </View>
-      <Text style={[styles.sectionTitle, { marginTop: 8, marginBottom: 13 }]}>Popular products</Text>
-      {medicines.slice(0, 6).map((medicine) => <ProductCard key={medicine.id} medicine={medicine} onAdd={onAdd} onDetails={onProduct} />)}
+      {search.trim() ? (
+        <>
+          <Text style={[styles.sectionTitle, { marginTop: 8, marginBottom: 13 }]}>{medicines.length ? "Matching medicines" : "No exact catalog match"}</Text>
+          {medicines.slice(0, 12).map((medicine) => <ProductCard key={medicine.id} medicine={medicine} onAdd={onAdd} onDetails={onProduct} />)}
+          {medicines.length === 0 && <Press style={[styles.rxCard, { marginTop: 6 }]} onPress={() => onRequestMedicine(search.trim())}>
+            <View style={styles.rxIcon}><Icon name="help-circle-outline" color={colors.brandPrimary} size={22} /></View>
+            <View style={{ flex: 1 }}><Text style={styles.productName}>Request “{search.trim()}”</Text><Text style={styles.muted}>We&apos;ll send the name to nearby pharmacies to check.</Text></View>
+            <Icon name="chevron-forward" color={colors.brandPrimary} />
+          </Press>}
+        </>
+      ) : (
+        <>
+          <Text style={[styles.sectionTitle, { marginTop: 8, marginBottom: 13 }]}>Popular products</Text>
+          {medicines.slice(0, 6).map((medicine) => <ProductCard key={medicine.id} medicine={medicine} onAdd={onAdd} onDetails={onProduct} />)}
+        </>
+      )}
     </ScrollView>
+  );
+}
+
+function RequestMedicineModal({ initialName, onClose, onSubmit }: { initialName: string; onClose: () => void; onSubmit: (name: string, quantity: number) => Promise<void> }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const [name, setName] = useState(initialName);
+  const [quantity, setQuantity] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (name.trim().length < 2 || submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(name.trim(), quantity);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
+      <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(11,37,69,0.24)" }}>
+        <View style={[styles.modal, { minHeight: "45%", borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingTop: 18 }]}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Request a medicine</Text>
+            <Press onPress={onClose} style={styles.iconButton}><Icon name="close" /></Press>
+          </View>
+          <Text style={styles.body}>Enter the medicine name and strength as written on the pack or prescription. Nearby pharmacies will check whether they carry it and confirm availability.</Text>
+          <TextInput testID="custom-medicine-name" style={[styles.inputField, styles.inputWrap, { marginTop: 16 }]} value={name} onChangeText={setName} placeholder="Medicine name and strength" placeholderTextColor={colors.muted} autoCapitalize="words" />
+          <View style={[styles.rowBetween, { marginTop: 14 }]}>
+            <Text style={styles.productName}>Quantity needed</Text>
+            <View style={styles.quantity}>
+              <Press style={styles.qtyButton} onPress={() => setQuantity((value) => Math.max(1, value - 1))}><Text style={{ color: colors.brandPrimary, fontWeight: "900" }}>−</Text></Press>
+              <Text style={styles.productName}>{quantity}</Text>
+              <Press style={styles.qtyButton} onPress={() => setQuantity((value) => Math.min(100, value + 1))}><Text style={{ color: colors.brandPrimary, fontWeight: "900" }}>+</Text></Press>
+            </View>
+          </View>
+          <Text style={[styles.muted, { marginTop: 10 }]}>This sends a request, not an order. A pharmacist confirms the product and price before you choose a pharmacy.</Text>
+          <Press testID="send-custom-medicine-request" style={[styles.primaryButton, { marginTop: 18 }]} onPress={() => void submit()} disabled={submitting || name.trim().length < 2}>
+            {submitting ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.buttonText}>Request from nearby pharmacies</Text>}
+          </Press>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -666,27 +723,64 @@ function OrdersScreen({ orders, onTrack, onReorder }: { orders: Order[]; onTrack
   );
 }
 
-function OffersScreen({ offers }: { offers: Offer[] }) {
+function RequestsScreen({ requests, onSelectOffer }: { requests: MedicineRequest[]; onSelectOffer: (request: MedicineRequest, offerId: string) => void }) {
   const styles = useStyles();
   const { colors } = useTheme();
+  const activeRequests = requests.filter((request) => request.status !== "order_placed");
   return (
     <ScrollView style={styles.content} contentContainerStyle={styles.scroll}>
-      <Text style={styles.title}>Offers & deals</Text>
-      <Text style={[styles.body, { marginTop: 5, marginBottom: 18 }]}>Save more on your everyday health.</Text>
-      {offers.map((offer, index) => (
-        <Press key={offer.id} style={styles.offerCard} onPress={() => Alert.alert(offer.code, offer.detail)}>
-          <LinearGradient
-            colors={index === 0 ? [colors.brandTertiary, colors.surfaceTertiary] : index === 1 ? [colors.surfaceTertiary, colors.surfaceSecondary] : [colors.brandTertiary, colors.surfaceSecondary]}
-            style={styles.offerInner}
-          >
-            <View>
-              <Text style={styles.offerTitle}>{offer.title}</Text>
-              <Text style={styles.body}>{offer.subtitle}</Text>
+      <Text style={styles.title}>Pharmacy requests</Text>
+      <Text style={[styles.body, { marginTop: 5, marginBottom: 18 }]}>Nearby pharmacies check availability and send offers. Choose one to create your order.</Text>
+      {activeRequests.length === 0 ? (
+        <Empty icon="time-outline" title="No active requests" copy="Search for medicines or upload a prescription to ask nearby pharmacies." />
+      ) : activeRequests.map((request) => {
+        const responses = request.offers ?? [];
+        const offers = responses.filter((offer) => offer.status === "offered" && offer.availability !== "unavailable");
+        const unavailable = responses.filter((offer) => offer.availability === "unavailable");
+        return (
+          <View key={request.id} style={styles.orderCard}>
+            <View style={styles.rowBetween}>
+              <View>
+                <Text style={styles.productName}>Request {request.id.slice(-8).toUpperCase()}</Text>
+                <Text style={styles.muted}>{new Date(request.created_at).toLocaleString()} · {request.matched_pharmacy_count} nearby {request.matched_pharmacy_count === 1 ? "pharmacy" : "pharmacies"}</Text>
+              </View>
+              <Text style={[styles.status, { color: request.status === "no_pharmacies" ? colors.error : colors.info, backgroundColor: colors.surfaceTertiary }]}>{request.status === "collecting_offers" ? "Finding offers" : request.status === "no_pharmacies" ? "No match yet" : request.status.replaceAll("_", " ")}</Text>
             </View>
-            <Text style={styles.code}>Use code: {offer.code}</Text>
-          </LinearGradient>
-        </Press>
-      ))}
+            {request.items.map((item) => <Text key={item.medicine_id} style={[styles.body, { marginTop: 10 }]}>{item.name} ×{item.quantity}{item.prescription_required ? " · prescription required" : ""}</Text>)}
+            {request.prescription_id && <View style={[styles.rxCard, { marginTop: 10, marginBottom: 0 }]}><View style={styles.rxIcon}><Icon name="document-text" color={colors.brandPrimary} /></View><Text style={[styles.body, { flex: 1 }]}>Prescription shared for pharmacist review</Text><Icon name="lock-closed" color={colors.muted} size={15} /></View>}
+            {offers.length === 0 ? (
+              <View style={[styles.addressCard, { marginTop: 13, backgroundColor: colors.surfaceSecondary }]}>
+                <Text style={styles.productName}>{request.status === "no_pharmacies" ? "No verified pharmacy matched this request" : unavailable.length ? "No pharmacy could fulfil this request" : "Waiting for pharmacy responses"}</Text>
+                <Text style={[styles.muted, { marginTop: 5 }]}>{request.status === "no_pharmacies" ? "Try again after nearby pharmacies join and add these medicines to their carry lists." : unavailable.length ? "These pharmacies checked their stock and could not supply the request." : "Offers will appear here as pharmacists check their actual stock. This page refreshes automatically."}</Text>
+                {unavailable.map((offer) => <Text key={offer.id} style={[styles.muted, { marginTop: 7 }]}>{offer.pharmacy_name}{offer.note ? ` · ${offer.note}` : " · unable to fulfil"}</Text>)}
+              </View>
+            ) : (
+              <>
+                <Text style={[styles.sectionTitle, { marginTop: 17, marginBottom: 9 }]}>Offers from nearby pharmacies</Text>
+                {offers.map((offer) => (
+                  <View key={offer.id} style={[styles.addressCard, { marginBottom: 9, borderColor: colors.brandTertiary }]}>
+                    <View style={styles.rowBetween}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.productName}>{offer.pharmacy_name}</Text>
+                        <Text style={styles.muted}>{offer.area}{offer.distance_km != null ? ` · ${offer.distance_km.toFixed(1)} km` : ""} · about {offer.eta_minutes} min</Text>
+                      </View>
+                      <Text style={styles.productPrice}>₹{offer.total}</Text>
+                    </View>
+                    {offer.items.map((item) => <Text key={item.medicine_id} style={[styles.muted, { marginTop: 7 }]}>{item.name} ×{item.quantity} · ₹{item.total}</Text>)}
+                    {offer.note ? <Text style={[styles.body, { marginTop: 8 }]}>{offer.note}</Text> : null}
+                    {request.prescription_id && offer.prescription_decision !== "matches" ? <Text style={[styles.muted, { marginTop: 8 }]}>Pharmacist review is not complete for this offer.</Text> : null}
+                    <Press style={[styles.primaryButton, { marginTop: 12 }]} onPress={() => onSelectOffer(request, offer.id)} disabled={Boolean(request.prescription_id && offer.prescription_decision !== "matches")}>
+                      <Text style={styles.buttonText}>Choose this pharmacy · ₹{offer.total}</Text>
+                    </Press>
+                    <Text style={[styles.muted, { marginTop: 8 }]}>Cash on delivery. Your order is created only after you choose.</Text>
+                  </View>
+                ))}
+                {unavailable.length > 0 && <Text style={[styles.muted, { marginTop: 3 }]}>{unavailable.length} other {unavailable.length === 1 ? "pharmacy" : "pharmacies"} checked but couldn&apos;t fulfil this request.</Text>}
+              </>
+            )}
+          </View>
+        );
+      })}
     </ScrollView>
   );
 }
@@ -785,11 +879,12 @@ function AddressModal({ token, user, onDone }: { token: string; user: User; onDo
   );
 }
 
-function UploadModal({ token, onClose }: { token: string; onClose: () => void }) {
+function UploadModal({ token, onClose, onUploaded }: { token: string; onClose: () => void; onUploaded: (prescriptionId: string, shareConsent: boolean) => void }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const [uri, setUri] = useState("");
   const [name, setName] = useState("");
+  const [shareConsent, setShareConsent] = useState(false);
   const pick = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.75 });
     if (!result.canceled) { setUri(result.assets[0].uri); setName(result.assets[0].fileName ?? "prescription.jpg"); }
@@ -797,9 +892,8 @@ function UploadModal({ token, onClose }: { token: string; onClose: () => void })
   const upload = async () => {
     if (!uri) return;
     try {
-      await api.uploadPrescription(token, uri, name);
-      Alert.alert("Prescription uploaded", "A pharmacist will review it before fulfillment.");
-      onClose();
+      const prescription = await api.uploadPrescription(token, uri, name);
+      onUploaded(prescription.id, shareConsent);
     } catch (err) {
       Alert.alert("Upload failed", err instanceof Error ? err.message : "Please try again.");
     }
@@ -812,13 +906,17 @@ function UploadModal({ token, onClose }: { token: string; onClose: () => void })
             <Text style={styles.modalTitle}>Upload prescription</Text>
             <Press onPress={onClose} style={styles.iconButton}><Icon name="close" /></Press>
           </View>
-          <Text style={styles.body}>Upload a clear image. A pharmacist will verify it before any prescription medicine is fulfilled.</Text>
+          <Text style={styles.body}>Upload a clear image. With your consent, it will be shared only with nearby pharmacies matched to your request. A pharmacist reviews it manually.</Text>
           <Press style={[styles.rxCard, { marginTop: 20, justifyContent: "center" }]} onPress={pick}>
             <Icon name="image-outline" color={colors.brandPrimary} size={24} />
             <Text style={[styles.body, { marginLeft: 10 }]}>{name || "Choose an image from your phone"}</Text>
           </Press>
-          <Press style={[styles.primaryButton, { marginTop: 24 }]} onPress={upload} disabled={!uri}>
-            <Text style={styles.buttonText}>Send for review</Text>
+          <Press onPress={() => setShareConsent((current) => !current)} style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 18, paddingVertical: 8 }}>
+            <View style={[styles.radio, shareConsent && styles.radioActive]}>{shareConsent && <View style={styles.radioDot} />}</View>
+            <Text style={[styles.body, { flex: 1 }]}>I agree to share this prescription with up to 5 nearby pharmacies for this request only.</Text>
+          </Press>
+          <Press style={[styles.primaryButton, { marginTop: 16 }]} onPress={upload} disabled={!uri || !shareConsent}>
+            <Text style={styles.buttonText}>Upload and continue</Text>
           </Press>
         </View>
       </View>
@@ -901,114 +999,33 @@ function ProductModal({ product, onClose, onAdd }: { product: Medicine | null; o
   );
 }
 
-// ----------------- CART & CHECKOUT -----------------
-async function payWithRazorpayWeb(checkout: { key_id: string; razorpay_order_id: string; amount: number; currency: string; customer: { name?: string | null; email?: string | null; phone?: string | null } }) {
-  return new Promise<{ razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string } | null>((resolve, reject) => {
-    if (typeof window === "undefined") return reject(new Error("Razorpay web is only available in browser"));
-    const load = () => new Promise<void>((res, rej) => {
-      if ((window as unknown as { Razorpay?: unknown }).Razorpay) return res();
-      const script = document.createElement("script");
-      script.src = "https://checkout.razorpay.com/v1/checkout.js";
-      script.onload = () => res();
-      script.onerror = () => rej(new Error("Failed to load Razorpay"));
-      document.body.appendChild(script);
-    });
-    load().then(() => {
-      const options = {
-        key: checkout.key_id,
-        order_id: checkout.razorpay_order_id,
-        amount: checkout.amount,
-        currency: checkout.currency,
-        name: "Justlocal",
-        description: "Medicine order",
-        prefill: { name: checkout.customer.name ?? "", email: checkout.customer.email ?? "", contact: checkout.customer.phone ?? "" },
-        theme: { color: "#0D9488" },
-        handler: (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => resolve(response),
-        modal: { ondismiss: () => resolve(null) },
-      };
-      // @ts-expect-error - global Razorpay is injected by the script
-      const rzp = new window.Razorpay(options);
-      rzp.open();
-    }).catch(reject);
-  });
-}
+// ----------------- REQUEST CART -----------------
 
-function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders, activeProfile, deliveryAddress }: { open: boolean; onClose: () => void; cart: CartItem[]; setCart: (c: CartItem[]) => void; user: User; token: string; refreshOrders: () => Promise<void>; activeProfile: FamilyMember | null; deliveryAddress: string | null }) {
+function CartModal({ open, onClose, cart, setCart, user, activeProfile, deliveryAddress, attachedPrescriptionId, attachedPrescriptionConsent, onSubmitRequest, onUploadPrescription }: { open: boolean; onClose: () => void; cart: CartItem[]; setCart: (c: CartItem[]) => void; user: User; activeProfile: FamilyMember | null; deliveryAddress: string | null; attachedPrescriptionId: string | null; attachedPrescriptionConsent: boolean; onSubmitRequest: (items: CartItem[], prescriptionId: string | null, shareConsent?: boolean) => Promise<boolean>; onUploadPrescription: () => void }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const [checkout, setCheckout] = useState(false);
   const [placing, setPlacing] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<"cod" | "razorpay">("cod");
-  const [razorpayReady, setRazorpayReady] = useState(false);
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const total = subtotal >= 299 ? subtotal : subtotal + 29;
 
-  useEffect(() => {
-    if (!open) return;
-    api.razorpayConfig().then((c) => setRazorpayReady(c.ready)).catch(() => setRazorpayReady(false));
-  }, [open]);
-
-  const placeOrder = async () => {
-    const address = deliveryAddress ?? user.addresses[0]?.address;
-    if (!address) { Alert.alert("Add an address", "Please add a delivery address before checkout."); return; }
+  const submitRequest = async () => {
+    if (cart.some((item) => item.prescription_required) && !attachedPrescriptionId) {
+      Alert.alert("Prescription required", "Attach your prescription before requesting prescription medicines.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Upload prescription", onPress: onUploadPrescription },
+      ]);
+      return;
+    }
     setPlacing(true);
     try {
-      const order = await api.createOrder(token, {
-        pharmacy_id: "pharmacy-1",
-        items: cart.map((item) => ({ medicine_id: item.id, name: item.name, quantity: item.quantity, price: item.price })),
-        address, delivery_method: "delivery", subtotal, discount: 0,
-        delivery_fee: subtotal >= 299 ? 0 : 29, total,
-        for_profile_id: activeProfile?.id, for_profile_name: activeProfile?.name,
-      });
-
-      if (paymentMethod === "razorpay") {
-        if (!razorpayReady) {
-          Alert.alert("Online payment unavailable", "Razorpay isn't configured yet. Your order was placed as Cash on Delivery.");
-        } else if (Platform.OS !== "web") {
-          Alert.alert("Native build required", "Razorpay checkout runs in a dev build. Your order was placed as Cash on Delivery for now.");
-        } else {
-          const checkoutData = await api.razorpayOrder(token, order.id);
-          const result = await payWithRazorpayWeb(checkoutData);
-          if (!result) {
-            Alert.alert("Payment cancelled", "Your order is still saved as Cash on Delivery. Retry from Orders.");
-          } else {
-            await api.razorpayVerify(token, { order_id: order.id, ...result });
-            Alert.alert("Payment successful", "Your Justlocal order is confirmed.");
-          }
-        }
-      } else {
-        Alert.alert("Order placed", "Your local pharmacy has received the order.");
-      }
-
-      setCart([]);
-      await refreshOrders();
-      setCheckout(false);
-      onClose();
+      const submitted = await onSubmitRequest(cart, attachedPrescriptionId, attachedPrescriptionConsent);
+      if (submitted) setCheckout(false);
     } catch (err) {
-      Alert.alert("Couldn't place order", err instanceof Error ? err.message : "Please try again.");
+      Alert.alert("Couldn't send request", err instanceof Error ? err.message : "Please try again.");
     } finally {
       setPlacing(false);
     }
-  };
-
-  const PaymentRow = ({ id, title, subtitle, icon }: { id: "cod" | "razorpay"; title: string; subtitle: string; icon: IconName }) => {
-    const selected = paymentMethod === id;
-    const disabled = id === "razorpay" && !razorpayReady;
-    return (
-      <Press
-        testID={`payment-${id}`}
-        style={[styles.addressCard, { flexDirection: "row", alignItems: "center", gap: 12, borderColor: selected ? colors.brandPrimary : colors.border, opacity: disabled ? 0.55 : 1 }]}
-        onPress={() => !disabled && setPaymentMethod(id)}
-        disabled={disabled}
-      >
-        <View style={[styles.categoryIcon, { width: 44, height: 44, borderRadius: 14 }]}><Icon name={icon} color={colors.brandPrimary} size={22} /></View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.productName}>{title}</Text>
-          <Text style={styles.muted}>{subtitle}</Text>
-        </View>
-        <View style={[styles.radio, selected && styles.radioActive]}>{selected && <View style={styles.radioDot} />}</View>
-      </Press>
-    );
   };
 
   return (
@@ -1016,7 +1033,7 @@ function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders, a
       <View style={[styles.modal, { paddingTop: 46 }]}>
         <View style={styles.modalHeader}>
           <Press onPress={onClose} style={styles.iconButton}><Icon name="arrow-back" /></Press>
-          <Text style={styles.modalTitle}>{checkout ? "Checkout" : "Your cart"}</Text>
+          <Text style={styles.modalTitle}>{checkout ? "Request offers" : "Your cart"}</Text>
           <Text style={styles.muted}>{cart.length} items</Text>
         </View>
         {checkout ? (
@@ -1038,22 +1055,28 @@ function CartModal({ open, onClose, cart, setCart, user, token, refreshOrders, a
               </View>
             ) : <Empty icon="location-outline" title="Add an address first" copy="Save a delivery address from Account or the header." />}
 
-            <Text style={[styles.sectionTitle, { marginTop: 22, marginBottom: 12 }]}>Fulfilling pharmacy</Text>
-            <View style={styles.addressCard}>
-              <Text style={styles.productName}>Apollo Pharmacy</Text>
-              <Text style={[styles.body, { marginTop: 5 }]}>Hiranandani Estate · 10–15 min</Text>
-              <Text style={styles.freeDelivery}>✓ Free delivery above ₹299</Text>
+            <Text style={[styles.sectionTitle, { marginTop: 22, marginBottom: 12 }]}>How pharmacy matching works</Text>
+            <View style={[styles.addressCard, { backgroundColor: colors.surfaceSecondary }]}>
+              <Text style={styles.productName}>Up to 5 nearby pharmacies</Text>
+              <Text style={[styles.body, { marginTop: 5 }]}>Pharmacies that carry these medicines will check their actual stock and send you an offer. You choose one before an order is created.</Text>
+              {cart.some((item) => item.prescription_required) && (
+                <Press onPress={onUploadPrescription} style={[styles.rxCard, { marginTop: 12, marginBottom: 0 }]}>
+                  <View style={styles.rxIcon}><Icon name="document-text-outline" color={colors.brandPrimary} /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.productName}>{attachedPrescriptionId ? "Prescription attached" : "Add your prescription"}</Text>
+                    <Text style={styles.muted}>{attachedPrescriptionId ? "Shared with matched pharmacies for pharmacist review." : "A pharmacist must verify it before the request can be fulfilled."}</Text>
+                  </View>
+                  <Icon name={attachedPrescriptionId ? "checkmark-circle" : "chevron-forward"} color={colors.brandPrimary} />
+                </Press>
+              )}
             </View>
-
-            <Text style={[styles.sectionTitle, { marginTop: 22, marginBottom: 12 }]}>Payment method</Text>
-            <PaymentRow id="cod" title="Cash on delivery" subtitle="Pay the delivery partner in cash" icon="cash-outline" />
-            <PaymentRow id="razorpay" title={razorpayReady ? "Pay online (Razorpay)" : "Online payment (setup pending)"} subtitle={razorpayReady ? "UPI, cards, wallets, netbanking" : "Add Razorpay keys to enable this"} icon="card-outline" />
 
             <View style={styles.summary}>
-              <View style={styles.rowBetween}><Text style={styles.body}>Order total</Text><Text style={styles.sectionTitle}>₹{total}</Text></View>
+              <View style={styles.rowBetween}><Text style={styles.body}>Estimated catalog total</Text><Text style={styles.sectionTitle}>₹{total}</Text></View>
+              <Text style={styles.muted}>Each pharmacy&apos;s final price is shown with its offer.</Text>
             </View>
-            <Press testID="place-order-button" style={[styles.primaryButton, { marginTop: 18 }]} onPress={placeOrder} disabled={placing}>
-              {placing ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.buttonText}>Place order</Text>}
+            <Press testID="request-offers-button" style={[styles.primaryButton, { marginTop: 18 }]} onPress={submitRequest} disabled={placing || cart.length === 0}>
+              {placing ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.buttonText}>Send request to pharmacies</Text>}
             </Press>
           </ScrollView>
         ) : (
@@ -1111,13 +1134,17 @@ export default function Index() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
-  const [offers, setOffers] = useState<Offer[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [medicineRequests, setMedicineRequests] = useState<MedicineRequest[]>([]);
+  const [clockNow, setClockNow] = useState<number | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [product, setProduct] = useState<Medicine | null>(null);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [showUpload, setShowUpload] = useState(false);
+  const [uploadContext, setUploadContext] = useState<"standalone" | "cart" | "refill">("standalone");
+  const [attachedPrescriptionId, setAttachedPrescriptionId] = useState<string | null>(null);
+  const [attachedPrescriptionConsent, setAttachedPrescriptionConsent] = useState(false);
   const [showAddresses, setShowAddresses] = useState(false);
   const [showCart, setShowCart] = useState(false);
   const [trackOrder, setTrackOrder] = useState<Order | null>(null);
@@ -1129,13 +1156,20 @@ export default function Index() {
   const [showFamily, setShowFamily] = useState(false);
   const [refills, setRefills] = useState<Refill[]>([]);
 
+  useEffect(() => {
+    const updateClock = () => setClockNow(Date.now());
+    updateClock();
+    const interval = setInterval(updateClock, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   const loadData = async (authToken: string) => {
-    const [cats, meds, stores, deals, userOrders, fam, rx] = await Promise.all([
-      api.categories(), api.medicines(), api.pharmacies(), api.offers(),
-      api.orders(authToken), api.listFamily(authToken), api.listRefills(authToken),
+    const [cats, meds, stores, userOrders, userRequests, fam, rx] = await Promise.all([
+      api.categories(), api.medicines(), api.pharmacies(),
+      api.orders(authToken), api.medicineRequests(authToken), api.listFamily(authToken), api.listRefills(authToken),
     ]);
-    setCategories(cats); setMedicines(meds); setPharmacies(stores); setOffers(deals); setOrders(userOrders);
-    setFamily(fam); setRefills(rx);
+    setCategories(cats); setMedicines(meds); setPharmacies(stores); setOrders(userOrders);
+    setMedicineRequests(userRequests); setFamily(fam); setRefills(rx);
   };
 
   // Deep-link session_id capture for Google OAuth callback
@@ -1183,6 +1217,15 @@ export default function Index() {
     })();
   }, [user]);
 
+  useEffect(() => {
+    if (!user || !token || tab !== "requests") return;
+    let active = true;
+    const refresh = () => api.medicineRequests(token).then((next) => { if (active) setMedicineRequests(next); }).catch(() => undefined);
+    void refresh();
+    const interval = setInterval(refresh, 6000);
+    return () => { active = false; clearInterval(interval); };
+  }, [tab, token, user]);
+
   const visibleMedicines = useMemo(
     () => (Array.isArray(medicines) ? medicines : []).filter((item) => (!categoryFilter || item.category === categoryFilter) && (!search || item.name.toLowerCase().includes(search.toLowerCase()) || item.category.toLowerCase().includes(search.toLowerCase()))),
     [medicines, categoryFilter, search]
@@ -1225,34 +1268,121 @@ export default function Index() {
   }
 
   const refreshOrders = async () => {
-    const [nextOrders, nextRefills] = await Promise.all([api.orders(token), api.listRefills(token)]);
-    setOrders(nextOrders); setRefills(nextRefills);
+    const [nextOrders, nextRefills, nextRequests] = await Promise.all([api.orders(token), api.listRefills(token), api.medicineRequests(token)]);
+    setOrders(nextOrders); setRefills(nextRefills); setMedicineRequests(nextRequests);
+  };
+
+  const submitMedicineRequest = async (items: CartItem[], prescriptionId?: string | null, prescriptionShareConsent = false) => {
+    if (prescriptionId && !prescriptionShareConsent) {
+      Alert.alert("Consent required", "Agree to share the prescription with matched pharmacies before sending the request.");
+      return false;
+    }
+    const address = location?.address || user.addresses[0]?.address;
+    if (!address) {
+      setShowCart(false);
+      Alert.alert("Add a delivery address", "Save an address before requesting offers.", [
+        { text: "Not now", style: "cancel" },
+        { text: "Open account", onPress: () => setTab("account") },
+      ]);
+      return false;
+    }
+    let latitude = location?.latitude;
+    let longitude = location?.longitude;
+    if (latitude === undefined || longitude === undefined) {
+      try {
+        const [geocoded] = await Location.geocodeAsync(address);
+        latitude = geocoded?.latitude;
+        longitude = geocoded?.longitude;
+      } catch { /* Some devices or addresses may not support geocoding. */ }
+    }
+    if (latitude === undefined || longitude === undefined) {
+      setShowCart(false);
+      Alert.alert("Location needed", "We couldn't locate that address. Choose your current location to find nearby pharmacies.", [
+        { text: "Not now", style: "cancel" },
+        { text: "Set location", onPress: () => setShowLocation(true) },
+      ]);
+      return false;
+    }
+    const created = await api.createMedicineRequest(token, {
+      items: items.map((item) => ({ medicine_id: item.id, quantity: item.quantity })),
+      prescription_id: prescriptionId ?? undefined,
+      prescription_share_consent: Boolean(prescriptionId && prescriptionShareConsent),
+      address,
+      latitude,
+      longitude,
+      for_profile_id: activeProfile?.id,
+      for_profile_name: activeProfile?.name,
+    });
+    setMedicineRequests((current) => [created, ...current.filter((request) => request.id !== created.id)]);
+    setCart([]);
+    setAttachedPrescriptionId(null);
+    setAttachedPrescriptionConsent(false);
+    setShowCart(false);
+    setTab("requests");
+    Alert.alert("Request sent", created.matched_pharmacy_count
+      ? `Sent to ${created.matched_pharmacy_count} nearby ${created.matched_pharmacy_count === 1 ? "pharmacy" : "pharmacies"}. Compare their offers here.`
+      : "No verified nearby pharmacies matched this request yet.");
+    return true;
+  };
+
+  const openPrescriptionUpload = (context: "standalone" | "cart" | "refill") => {
+    if (!location && !user.addresses[0]?.address) {
+      setShowCart(false);
+      Alert.alert("Delivery location needed", "Choose a delivery address before sending a request to nearby pharmacies.", [
+        { text: "Not now", style: "cancel" },
+        { text: "Set location", onPress: () => setShowLocation(true) },
+      ]);
+      return;
+    }
+    setUploadContext(context);
+    if (context !== "standalone") setShowCart(false);
+    setShowUpload(true);
+  };
+
+  const handlePrescriptionUploaded = async (prescriptionId: string, shareConsent: boolean) => {
+    setShowUpload(false);
+    if (uploadContext === "cart") {
+      setAttachedPrescriptionId(prescriptionId);
+      setAttachedPrescriptionConsent(shareConsent);
+      setShowCart(true);
+      Alert.alert("Prescription attached", "It will be shared with matched pharmacies when you send this request.");
+      return;
+    }
+    try {
+      await submitMedicineRequest(uploadContext === "refill" ? cart : [], prescriptionId, shareConsent);
+    } catch (err) {
+      Alert.alert("Request could not be sent", err instanceof Error ? err.message : "Please try again.");
+    }
+  };
+
+  const selectPharmacyOffer = async (request: MedicineRequest, offerId: string) => {
+    try {
+      const order = await api.selectMedicineOffer(token, request.id, offerId, "cod");
+      await refreshOrders();
+      setTab("orders");
+      Alert.alert("Pharmacy selected", `Order ${order.order_number} is confirmed. Pay cash on delivery.`);
+    } catch (err) {
+      Alert.alert("Couldn't select this offer", err instanceof Error ? err.message : "Please refresh and try again.");
+    }
   };
 
   const reorderRefill = async (refill: Refill) => {
-    try {
-      await api.reorderRefill(token, refill.id, {
-        address: location?.address ?? user.addresses[0]?.address,
-        for_profile_id: refill.for_profile_id ?? activeProfile?.id,
-      });
-      await refreshOrders();
-      Alert.alert("Reordered", `${refill.medicine_name} has been sent to the pharmacy.`);
-    } catch (err) {
-      if (err instanceof Error && err.message.toLowerCase().includes("address")) {
-        Alert.alert("Add an address", "Tap the location card to set a delivery address first.");
-      } else {
-        Alert.alert("Reorder failed", err instanceof Error ? err.message : "Please try again.");
-      }
+    const medicine = medicines.find((item) => item.id === refill.medicine_id);
+    if (!medicine) {
+      Alert.alert("Medicine unavailable", "This refill is no longer in the shared medicine catalog.");
+      return;
     }
+    setCart([{ ...medicine, quantity: refill.quantity }]);
+    openPrescriptionUpload("refill");
   };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.content}>
         {tab === "home" && (
-          <Home categories={categories} pharmacies={pharmacies} offers={offers} medicines={visibleMedicines}
+          <Home categories={categories} pharmacies={pharmacies} medicines={visibleMedicines}
             onTab={setTab}
-            onPrescription={() => setShowUpload(true)}
+            onPrescription={() => openPrescriptionUpload("standalone")}
             onCategory={(category) => { setCategoryFilter(category); setTab("categories"); }}
             onProduct={setProduct}
             onAdd={addToCart}
@@ -1260,12 +1390,13 @@ export default function Index() {
             cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)}
             search={search} setSearch={setSearch}
             location={location} onLocation={() => setShowLocation(true)}
-            refills={refills} activeProfile={activeProfile} onReorderRefill={reorderRefill}
+            refills={refills} activeProfile={activeProfile} onReorderRefill={reorderRefill} now={clockNow}
           />
         )}
         {tab === "categories" && (
           <CategoriesScreen categories={categories} medicines={visibleMedicines} onProduct={setProduct} onAdd={addToCart} onCategory={setCategoryFilter} />
         )}
+        {tab === "requests" && <RequestsScreen requests={medicineRequests} onSelectOffer={selectPharmacyOffer} />}
         {tab === "orders" && (
           <OrdersScreen orders={orders} onTrack={setTrackOrder} onReorder={(order) => {
             const first = medicines.find((item) => item.name === order.items[0]?.name);
@@ -1273,7 +1404,6 @@ export default function Index() {
             setShowCart(true);
           }} />
         )}
-        {tab === "offers" && <OffersScreen offers={offers} />}
         {tab === "account" && (
           <AccountScreen user={user} onAddresses={() => setShowAddresses(true)} onOrders={() => setTab("orders")} onLogout={logout}
             onFamily={() => setShowFamily(true)} familyCount={family.length} activeProfile={activeProfile}
@@ -1286,8 +1416,8 @@ export default function Index() {
           [
             ["home", "Home", "home-outline"],
             ["categories", "Categories", "grid-outline"],
+            ["requests", "Requests", "hourglass-outline"],
             ["orders", "Orders", "receipt-outline"],
-            ["offers", "Offers", "pricetag-outline"],
             ["account", "Account", "person-outline"],
           ] as [Tab, string, IconName][]
         ).map(([key, label, icon]) => (
@@ -1307,10 +1437,10 @@ export default function Index() {
       </View>
 
       <ProductModal product={product} onClose={() => setProduct(null)} onAdd={addToCart} />
-      <CartModal open={showCart} onClose={() => setShowCart(false)} cart={cart} setCart={setCart} user={user} token={token} refreshOrders={refreshOrders} activeProfile={activeProfile} deliveryAddress={location?.address ?? null} />
+      <CartModal open={showCart} onClose={() => setShowCart(false)} cart={cart} setCart={setCart} user={user} activeProfile={activeProfile} deliveryAddress={location?.address ?? user.addresses[0]?.address ?? null} attachedPrescriptionId={attachedPrescriptionId} attachedPrescriptionConsent={attachedPrescriptionConsent} onSubmitRequest={submitMedicineRequest} onUploadPrescription={() => openPrescriptionUpload("cart")} />
       <LocationModal visible={showLocation} onClose={() => setShowLocation(false)} onPick={(loc) => { setLocation(loc); setShowLocation(false); }} current={location} />
       <FamilyModal visible={showFamily} onClose={() => setShowFamily(false)} token={token} activeId={activeProfile?.id ?? null} members={family} onChange={setFamily} onPick={(member) => { setActiveProfile(member); setShowFamily(false); }} />
-      {showUpload && <UploadModal token={token} onClose={() => setShowUpload(false)} />}
+      {showUpload && <UploadModal token={token} onClose={() => setShowUpload(false)} onUploaded={handlePrescriptionUploaded} />}
       {showAddresses && (
         <Modal visible animationType="slide" onRequestClose={() => setShowAddresses(false)}>
           <AddressModal token={token} user={user} onDone={() => setShowAddresses(false)} />
