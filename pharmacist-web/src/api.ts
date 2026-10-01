@@ -8,6 +8,16 @@ export type Pharmacist = {
   pharmacy_name: string;
   status: "verified";
 };
+export type PendingPharmacy = {
+  id: string;
+  name: string;
+  address: string;
+  license_number: string;
+  latitude: number;
+  longitude: number;
+  created_at: string;
+  pharmacist?: { id: string; name: string; email: string; phone: string } | null;
+};
 export type PharmacyRegistration = { name: string; email: string; phone: string; password: string; pharmacy_name: string; license_number: string; address: string; latitude: number; longitude: number };
 
 export type PharmacyProduct = {
@@ -44,7 +54,7 @@ export type PharmacyRequest = {
   matched_pharmacy_count: number;
   assignment_id: string;
   assignment_status: string;
-  distance_km: number;
+  distance_km: number | null;
   prescription_review?: { decision: "matches" | "clarification" | "not-approved"; reason?: string };
   offer?: { id: string; availability: string; total: number; status: string };
 };
@@ -71,7 +81,24 @@ async function call<T>(path: string, token?: string, init: RequestInit = {}): Pr
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Request failed. Please try again.");
+  if (!response.ok) {
+    const error = new Error(typeof result.detail === "string" ? result.detail : "Request failed. Please try again.");
+    Object.assign(error, { status: response.status });
+    throw error;
+  }
+  return result as T;
+}
+
+async function adminCall<T>(path: string, adminToken: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("X-Pharmacy-Admin-Token", adminToken);
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(typeof result.detail === "string" ? result.detail : "Request failed. Please try again.");
+    Object.assign(error, { status: response.status });
+    throw error;
+  }
   return result as T;
 }
 
@@ -91,6 +118,11 @@ export const pharmacistApi = {
   respond: (token: string, requestId: string, body: { availability: "available" | "partial" | "unavailable"; prescription_decision?: "matches" | "clarification" | "not-approved"; items?: { medicine_id: string; quantity: number }[]; eta_minutes?: number; note?: string }) => call<{ id: string; total: number; status: string }>(`/pharmacist/requests/${requestId}/offer`, token, { method: "POST", body: JSON.stringify(body) }),
   orders: (token: string) => call<PharmacyOrder[]>("/pharmacist/orders", token),
   updateOrder: (token: string, orderId: string, status: "Preparing" | "Out for Delivery" | "Delivered") => call<{ id: string; status: string }>(`/pharmacist/orders/${orderId}/status`, token, { method: "PATCH", body: JSON.stringify({ status }) }),
+};
+
+export const pharmacyAdminApi = {
+  pending: (token: string) => adminCall<PendingPharmacy[]>("/admin/pharmacies/pending", token),
+  verify: (token: string, pharmacyId: string) => adminCall<{ pharmacy_id: string; status: string }>(`/admin/pharmacies/${encodeURIComponent(pharmacyId)}/verify`, token, { method: "POST" }),
 };
 
 export function prescriptionImage(data: { content_type: string; data_base64: string }) {

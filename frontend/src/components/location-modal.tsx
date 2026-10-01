@@ -6,6 +6,8 @@ import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, ScrollVi
 import { SavedLocation } from "@/src/api";
 import { makeStyles, useTheme } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
+import { MapLocationPicker } from "./map-location-picker";
+import { MapCoordinate } from "./map-location-picker.types";
 
 const RECENTS_KEY = "justlocal_location_recents";
 const CURRENT_KEY = "justlocal_location_current";
@@ -32,6 +34,7 @@ const useStyles = makeStyles((colors) => ({
   primary: { minHeight: 46, borderRadius: 14, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, flexDirection: "row", gap: 8 },
   primaryText: { color: colors.onBrandPrimary, fontSize: 14, fontWeight: "800" },
   hint: { color: colors.muted, fontSize: 12, marginTop: 10, textAlign: "center" },
+  mapHint: { color: colors.muted, fontSize: 12, marginTop: 8 },
 }));
 
 function Press({ children, onPress, style, disabled, testID }: { children: React.ReactNode; onPress?: () => void; style?: object; disabled?: boolean; testID?: string }) {
@@ -72,14 +75,24 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
   const [recents, setRecents] = useState<SavedLocation[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [manual, setManual] = useState("");
+  const [mapPoint, setMapPoint] = useState<MapCoordinate | null>(null);
 
   useEffect(() => {
-    if (visible) loadRecents().then(setRecents);
-  }, [visible]);
+    if (!visible) return;
+    void loadRecents().then(setRecents);
+    setManual(current?.address ?? "");
+    setMapPoint(current?.latitude !== undefined && current.longitude !== undefined
+      ? { latitude: current.latitude, longitude: current.longitude }
+      : null);
+  }, [visible, current]);
 
   const persistPick = async (loc: SavedLocation) => {
     const next = [loc, ...recents.filter((r) => r.address !== loc.address)].slice(0, MAX_RECENTS);
     setRecents(next);
+    setMapPoint(loc.latitude !== undefined && loc.longitude !== undefined
+      ? { latitude: loc.latitude, longitude: loc.longitude }
+      : null);
+    setManual(loc.address);
     await saveRecents(next);
     await saveCurrent(loc);
     onPick(loc);
@@ -121,9 +134,29 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
 
   const saveManual = async () => {
     const trimmed = manual.trim();
-    if (!trimmed) return;
-    await persistPick({ id: `loc-${Date.now()}`, label: "Custom location", address: trimmed, savedAt: Date.now() });
-    setManual("");
+    if (!trimmed && !mapPoint) return;
+    const address = trimmed || `Pinned map location (${mapPoint!.latitude.toFixed(5)}, ${mapPoint!.longitude.toFixed(5)})`;
+    await persistPick({
+      id: `loc-${Date.now()}`,
+      label: mapPoint ? "Pinned delivery location" : "Custom location",
+      address,
+      latitude: mapPoint?.latitude,
+      longitude: mapPoint?.longitude,
+      savedAt: Date.now(),
+    });
+  };
+
+  const selectMapPoint = async (point: MapCoordinate) => {
+    setMapPoint(point);
+    setManual(`Pinned map location (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
+    if (Platform.OS === "web") return;
+    try {
+      const [place] = await Location.reverseGeocodeAsync(point);
+      const address = [place?.name, place?.street, place?.district, place?.city, place?.region, place?.postalCode].filter(Boolean).join(", ");
+      if (address) setManual(address);
+    } catch {
+      // The address can still be entered manually if reverse geocoding is unavailable.
+    }
   };
 
   const remove = async (id: string) => {
@@ -167,6 +200,25 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
 
         {recents.length > 0 && <Text style={styles.section}>Saved & recent</Text>}
         <ScrollView>
+          <Text style={styles.section}>Choose on map</Text>
+          <MapLocationPicker selected={mapPoint} onSelect={(point) => void selectMapPoint(point)} />
+          <Text style={styles.mapHint}>{mapPoint ? "Pin selected. Add or adjust the delivery address below." : "Tap the map to place a pin at your delivery point."}</Text>
+          <Text style={styles.section}>Delivery address</Text>
+          <TextInput
+            testID="location-manual-input"
+            style={styles.input}
+            value={manual}
+            onChangeText={setManual}
+            placeholder={mapPoint ? "Flat, building, street, area…" : "Flat 12B, Rose Apartments, MG Road…"}
+            placeholderTextColor={colors.muted}
+            returnKeyType="done"
+            onSubmitEditing={saveManual}
+          />
+          <Press testID="location-manual-save" style={styles.primary} onPress={saveManual} disabled={!manual.trim() && !mapPoint}>
+            <Text style={styles.primaryText}>{mapPoint ? "Save this location" : "Save this address"}</Text>
+            <Ionicons name="arrow-forward" size={16} color={colors.onBrandPrimary} />
+          </Press>
+          <Text style={styles.hint}>The pin supplies precise coordinates; the address helps the pharmacy find your door.</Text>
           {recents.map((item) => (
             <View key={item.id} style={styles.row}>
               <Press style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 12 }} onPress={() => persistPick(item)}>
@@ -179,22 +231,6 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
               <Press onPress={() => remove(item.id)}><Ionicons name="close-circle" size={20} color={colors.muted} /></Press>
             </View>
           ))}
-          <Text style={styles.section}>Type an address</Text>
-          <TextInput
-            testID="location-manual-input"
-            style={styles.input}
-            value={manual}
-            onChangeText={setManual}
-            placeholder="Flat 12B, Rose Apartments, MG Road…"
-            placeholderTextColor={colors.muted}
-            returnKeyType="done"
-            onSubmitEditing={saveManual}
-          />
-          <Press testID="location-manual-save" style={styles.primary} onPress={saveManual} disabled={!manual.trim()}>
-            <Text style={styles.primaryText}>Save this address</Text>
-            <Ionicons name="arrow-forward" size={16} color={colors.onBrandPrimary} />
-          </Press>
-          <Text style={styles.hint}>We use this to route your medicines and estimate delivery time.</Text>
         </ScrollView>
       </View>
     </Modal>

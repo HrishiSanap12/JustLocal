@@ -1,7 +1,39 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, LockKeyhole, Store, X } from "lucide-react";
+import type { LatLngExpression } from "leaflet";
+import { CircleMarker, MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 
 import { PharmacyRegistration } from "./api";
+
+type MapPoint = { latitude: number; longitude: number };
+const DEFAULT_MAP_CENTER: LatLngExpression = [20.5937, 78.9629];
+
+function MapClickHandler({ onSelect }: { onSelect: (point: MapPoint) => void }) {
+  useMapEvents({ click: (event) => onSelect({ latitude: event.latlng.lat, longitude: event.latlng.lng }) });
+  return null;
+}
+
+function MapViewport({ point }: { point: MapPoint | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (point) map.flyTo([point.latitude, point.longitude], Math.max(map.getZoom(), 15), { duration: 0.35 });
+  }, [map, point]);
+  return null;
+}
+
+function LocationMap({ point, onSelect }: { point: MapPoint | null; onSelect: (point: MapPoint) => void }) {
+  return (
+    <div className="location-map-wrap">
+      <MapContainer center={DEFAULT_MAP_CENTER} zoom={5} minZoom={3} maxZoom={19} scrollWheelZoom className="location-map">
+        <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <MapClickHandler onSelect={onSelect} />
+        <MapViewport point={point} />
+        {point && <CircleMarker center={[point.latitude, point.longitude]} radius={9} pathOptions={{ color: "#ffffff", weight: 3, fillColor: "#0d9488", fillOpacity: 1 }} />}
+      </MapContainer>
+      <span className="location-map-hint">{point ? "Pin placed. Click the map to move it." : "Click the map to place the pharmacy pin."}</span>
+    </div>
+  );
+}
 
 export function AuthDialog({ onClose, onLogin, onRegister }: {
   onClose: () => void;
@@ -11,7 +43,9 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
   const [mode, setMode] = useState<"login" | "register" | "pending">("login");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", pharmacy_name: "", license_number: "", address: "", latitude: "", longitude: "" });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", pharmacy_name: "", license_number: "", address: "" });
+  const [location, setLocation] = useState<MapPoint | null>(null);
+  const [locating, setLocating] = useState(false);
 
   function update(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -32,6 +66,10 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
 
   async function submitRegistration(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!location) {
+      setError("Choose your pharmacy location on the map.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -43,8 +81,8 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
         pharmacy_name: form.pharmacy_name,
         license_number: form.license_number,
         address: form.address,
-        latitude: Number(form.latitude),
-        longitude: Number(form.longitude),
+        latitude: location.latitude,
+        longitude: location.longitude,
       });
       setMode("pending");
       setError(message);
@@ -53,6 +91,26 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
     } finally {
       setBusy(false);
     }
+  }
+
+  function useCurrentLocation() {
+    if (!navigator.geolocation) {
+      setError("Location is unavailable in this browser. Choose the location on the map.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        setLocation({ latitude: coords.latitude, longitude: coords.longitude });
+        setError("");
+        setLocating(false);
+      },
+      () => {
+        setError("Couldn't get your location. Choose it on the map instead.");
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 12000 },
+    );
   }
 
   return (
@@ -84,8 +142,10 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
               <label className="form-label">Pharmacy license number<input required value={form.license_number} onChange={(event) => update("license_number", event.target.value)} /></label>
               <label className="form-label">Password (12+ characters)<input type="password" minLength={12} required value={form.password} onChange={(event) => update("password", event.target.value)} /></label>
               <label className="form-label wide-field">Pharmacy address<input required minLength={8} value={form.address} onChange={(event) => update("address", event.target.value)} /></label>
-              <label className="form-label">Latitude<input type="number" min={-90} max={90} step="any" required value={form.latitude} onChange={(event) => update("latitude", event.target.value)} /></label>
-              <label className="form-label">Longitude<input type="number" min={-180} max={180} step="any" required value={form.longitude} onChange={(event) => update("longitude", event.target.value)} /></label>
+              <div className="location-map-field wide-field">
+                <div className="location-map-heading"><strong>Pharmacy location</strong><button type="button" className="map-locate-button" onClick={useCurrentLocation} disabled={locating}>{locating ? "Finding location…" : "Use my location"}</button></div>
+                <LocationMap point={location} onSelect={(point) => { setLocation(point); setError(""); }} />
+              </div>
             </div>
             {error && <div className="auth-error" role="alert">{error}</div>}
             <div className="dialog-actions auth-form-actions"><button type="button" className="button button-quiet" onClick={() => { setMode("login"); setError(""); }}><ArrowLeft size={14} />Back to sign in</button><button className="button button-primary" disabled={busy}>{busy ? "Submitting…" : "Submit for verification"}</button></div>

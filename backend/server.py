@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
+from math import atan2, cos, radians, sin, sqrt
 import base64
 import hashlib
 import hmac
@@ -24,10 +25,12 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
 from pharmacy_routes import build_pharmacy_router
+from rag.pipeline import answer_medicine_question
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
+load_dotenv(ROOT_DIR / ".admin.env")
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -52,6 +55,10 @@ api_router = APIRouter(prefix="/api")
 class AuthInput(BaseModel):
     identifier: str
     password: str
+
+
+class MedicineChatInput(BaseModel):
+    question: str = Field(min_length=2, max_length=500)
 
 
 class RegisterInput(BaseModel):
@@ -184,7 +191,7 @@ async def seed_database() -> None:
         ("Health Devices", "thermometer", "Healthcare Devices"),
         ("First Aid", "medkit", "Healthcare Devices"),
         ("Skin Care", "flower", "Personal Care"),
-        ("Oral Care", "smile", "Personal Care"),
+        ("Oral Care", "happy", "Personal Care"),
     ]
     if await db.categories.count_documents({}) == 0:
         await db.categories.insert_many([
@@ -194,6 +201,7 @@ async def seed_database() -> None:
     else:
         # Ensure any legacy invalid icons are patched.
         await db.categories.update_many({"icon": "medical-bag"}, {"$set": {"icon": "medkit"}})
+        await db.categories.update_many({"icon": "smile"}, {"$set": {"icon": "happy"}})
 
     medicines = [
         ("Paracetamol 500mg", "Strip of 10", "Cipla", 25, "OTC Medicines", False),
@@ -206,11 +214,25 @@ async def seed_database() -> None:
         ("Revital H Capsule", "Strip of 10", "Sun Pharma", 150, "Vitamins & Supplements", False),
         ("OneTouch Glucometer", "1 device", "LifeScan", 899, "Health Devices", False),
         ("Savlon Antiseptic", "100ml bottle", "ITC", 89, "First Aid", False),
+        ("Ibuprofen 400mg", "Strip of 10", "Abbott", 38, "Pain Relief", False),
+        ("Diclofenac Pain Relief Gel", "30g tube", "Voltaren", 112, "Pain Relief", False),
+        ("ORS Powder", "21.8g sachet", "Electral", 22, "OTC Medicines", False),
+        ("Azithromycin 500mg", "Strip of 3", "Cipla", 62, "Prescription Medicines", True),
+        ("Metformin 500mg", "Strip of 10", "USV", 18, "Diabetes Care", False),
+        ("Amlodipine 5mg", "Strip of 10", "Zydus", 24, "Prescription Medicines", True),
+        ("Omeprazole 20mg", "Strip of 10", "Dr. Reddy's", 48, "OTC Medicines", False),
+        ("Cough Relief Syrup", "100ml bottle", "Dabur", 96, "Cold & Cough", False),
+        ("Levocetirizine 5mg", "Strip of 10", "Sun Pharma", 35, "OTC Medicines", False),
+        ("Mupirocin 2% Ointment", "5g tube", "Glenmark", 98, "First Aid", False),
+        ("Clotrimazole 1% Cream", "15g tube", "Himalaya", 74, "Skin Care", False),
+        ("Folic Acid 5mg", "Strip of 30", "Torrent", 32, "Vitamins & Supplements", False),
     ]
-    if await db.medicines.count_documents({}) == 0:
-        await db.medicines.insert_many([
-            {
-                "id": f"med-{index + 1}",
+    for index, (name, pack, manufacturer, price, category, prescription_required) in enumerate(medicines):
+        medicine_id = f"med-{index + 1}"
+        await db.medicines.update_one(
+            {"id": medicine_id},
+            {"$setOnInsert": {
+                "id": medicine_id,
                 "name": name,
                 "pack": pack,
                 "manufacturer": manufacturer,
@@ -221,9 +243,9 @@ async def seed_database() -> None:
                 "availability": "In stock" if index != 5 else "Low stock",
                 "nearby_stores": 3 + index % 4,
                 "image_color": ["#CCFBF1", "#DBEAFE", "#FEF3C7", "#FCE7F3"][index % 4],
-            }
-            for index, (name, pack, manufacturer, price, category, prescription_required) in enumerate(medicines)
-        ])
+            }},
+            upsert=True,
+        )
 
     if await db.pharmacies.count_documents({}) == 0:
         await db.pharmacies.insert_many([
@@ -435,6 +457,11 @@ async def me(user: dict = Depends(current_user)) -> dict:
     return safe_user(user)
 
 
+@api_router.post("/chat")
+async def medicine_chat(payload: MedicineChatInput, user: dict = Depends(current_user)) -> dict:
+    return await answer_medicine_question(db, payload.question, user["id"])
+
+
 @api_router.post("/auth/logout")
 async def logout(authorization: Optional[str] = Header(default=None)) -> dict:
     if authorization and authorization.startswith("Bearer "):
@@ -460,8 +487,28 @@ async def medicines(category: Optional[str] = None, search: Optional[str] = None
 
 
 @api_router.get("/pharmacies")
-async def pharmacies() -> list:
-    return await db.pharmacies.find({"verification_status": "verified"}, {"_id": 0}).to_list(50)
+async def pharmacies(latitude: Optional[float] = None, longitude: Optional[float] = None) -> list:
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(status_code=422, detail="Provide both latitude and longitude")
+    records = await db.pharmacies.find({"verification_status": "verified"}, {"_id": 0}).to_list(100)
+    if latitude is None or longitude is None:
+        return records
+
+    earth_radius_km = 6371.0
+    nearby = []
+    for pharmacy in records:
+        pharmacy_latitude = pharmacy.get("latitude")
+        pharmacy_longitude = pharmacy.get("longitude")
+        if not isinstance(pharmacy_latitude, (int, float)) or not isinstance(pharmacy_longitude, (int, float)):
+            continue
+        delta_latitude = radians(pharmacy_latitude - latitude)
+        delta_longitude = radians(pharmacy_longitude - longitude)
+        value = sin(delta_latitude / 2) ** 2 + cos(radians(latitude)) * cos(radians(pharmacy_latitude)) * sin(delta_longitude / 2) ** 2
+        distance_km = 2 * earth_radius_km * atan2(sqrt(value), sqrt(1 - value))
+        if distance_km <= 50:
+            nearby.append(({**pharmacy, "distance_km": round(distance_km, 2), "distance": f"{distance_km:.1f} km"}, distance_km))
+    nearby.sort(key=lambda item: item[1])
+    return [pharmacy for pharmacy, _distance in nearby]
 
 
 @api_router.get("/offers")

@@ -135,9 +135,9 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
                 await db.medicine_requests.update_one({"id": document["id"], "status": "collecting_offers"}, {"$set": {"status": "expired"}})
                 await db.pharmacy_request_assignments.update_many({"request_id": document["id"], "status": {"$in": ["invited", "reviewing"]}}, {"$set": {"status": "expired", "closed_at": now_iso()}})
                 document["status"] = "expired"
-        assignments = await db.pharmacy_request_assignments.find({"request_id": document["id"]}, {"_id": 0}).to_list(10)
+        assignments = await db.pharmacy_request_assignments.find({"request_id": document["id"]}, {"_id": 0}).to_list(100)
         assignment_by_pharmacy = {assignment["pharmacy_id"]: assignment for assignment in assignments}
-        offers = await db.pharmacy_offers.find({"request_id": document["id"]}, {"_id": 0}).sort("created_at", 1).to_list(20)
+        offers = await db.pharmacy_offers.find({"request_id": document["id"]}, {"_id": 0}).sort("created_at", 1).to_list(100)
         pharmacy_ids = list({offer["pharmacy_id"] for offer in offers})
         pharmacies = await db.pharmacies.find({"id": {"$in": pharmacy_ids}}, {"_id": 0}).to_list(20) if pharmacy_ids else []
         pharmacy_by_id = {pharmacy["id"]: pharmacy for pharmacy in pharmacies}
@@ -240,7 +240,23 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
     async def pending_pharmacies(x_pharmacy_admin_token: Optional[str] = Header(default=None)) -> list:
         require_admin(x_pharmacy_admin_token)
         pharmacies = await db.pharmacies.find({"verification_status": "pending"}, {"_id": 0}).to_list(100)
-        return pharmacies
+        if not pharmacies:
+            return []
+        accounts = await db.pharmacist_accounts.find(
+            {"pharmacy_id": {"$in": [pharmacy["id"] for pharmacy in pharmacies]}, "status": "pending"},
+            {"_id": 0, "password_hash": 0},
+        ).to_list(100)
+        account_by_pharmacy = {account["pharmacy_id"]: account for account in accounts}
+        return [
+            {
+                **pharmacy,
+                "pharmacist": {
+                    key: account_by_pharmacy[pharmacy["id"]].get(key)
+                    for key in ("id", "name", "email", "phone")
+                } if pharmacy["id"] in account_by_pharmacy else None,
+            }
+            for pharmacy in pharmacies
+        ]
 
     @router.post("/admin/pharmacies/{pharmacy_id}/verify")
     async def verify_pharmacy(pharmacy_id: str, x_pharmacy_admin_token: Optional[str] = Header(default=None)) -> dict:
@@ -367,33 +383,26 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         }
         await db.medicine_requests.insert_one(request_doc)
 
-        candidate_pharmacies = await db.pharmacies.find({
-            "verification_status": "verified",
-            "accepting_requests": True,
-            "geo_location": {"$near": {"$geometry": {"type": "Point", "coordinates": [payload.longitude, payload.latitude]}, "$maxDistance": 50000}},
-        }, {"_id": 0}).to_list(1000)
-        carries_by_pharmacy: dict[str, set[str]] = {}
-        if item_ids:
-            carry_entries = await db.pharmacy_carry_list.find({"medicine_id": {"$in": item_ids}, "carried": True}, {"_id": 0}).to_list(5000)
-            for entry in carry_entries:
-                carries_by_pharmacy.setdefault(entry["pharmacy_id"], set()).add(entry["medicine_id"])
+        candidate_pharmacies = await db.pharmacies.find(
+            {"verification_status": "verified", "accepting_requests": True}, {"_id": 0}
+        ).to_list(100)
         candidates = []
         for pharmacy in candidate_pharmacies:
-            pharmacy_id = pharmacy["id"]
-            if item_ids and not set(item_ids).issubset(carries_by_pharmacy.get(pharmacy_id, set())):
-                continue
-            distance = distance_km(payload.latitude, payload.longitude, pharmacy["latitude"], pharmacy["longitude"])
+            pharmacy_latitude = pharmacy.get("latitude")
+            pharmacy_longitude = pharmacy.get("longitude")
+            distance = None
+            if isinstance(pharmacy_latitude, (int, float)) and isinstance(pharmacy_longitude, (int, float)):
+                distance = distance_km(payload.latitude, payload.longitude, pharmacy_latitude, pharmacy_longitude)
             candidates.append((distance, pharmacy))
-        candidates.sort(key=lambda pair: pair[0])
-        selected = candidates[:5]
+        candidates.sort(key=lambda pair: pair[0] if pair[0] is not None else float("inf"))
         assignments = [{
             "id": f"assignment-{uuid.uuid4().hex[:12]}",
             "request_id": request_id,
             "pharmacy_id": pharmacy["id"],
             "status": "invited",
-            "distance_km": round(distance, 2),
+            "distance_km": round(distance, 2) if distance is not None else None,
             "created_at": now_iso(),
-        } for distance, pharmacy in selected]
+        } for distance, pharmacy in candidates]
         if assignments:
             await db.pharmacy_request_assignments.insert_many(assignments)
         status = "collecting_offers" if assignments else "no_pharmacies"
@@ -413,6 +422,31 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         if not document:
             raise HTTPException(status_code=404, detail="Request not found")
         return await customer_request_view(document)
+
+    @router.delete("/medicine-requests/{request_id}")
+    async def revoke_customer_request(request_id: str, user: dict = Depends(customer_dependency)) -> dict:
+        request_doc = await db.medicine_requests.find_one({"id": request_id, "user_id": user["id"]}, {"_id": 0})
+        if not request_doc:
+            raise HTTPException(status_code=404, detail="Request not found")
+        revocable_statuses = ["collecting_offers", "no_pharmacies"]
+        if request_doc.get("status") not in revocable_statuses:
+            raise HTTPException(status_code=409, detail="This request can no longer be withdrawn")
+        revoked_at = now_iso()
+        result = await db.medicine_requests.update_one(
+            {"id": request_id, "user_id": user["id"], "status": {"$in": revocable_statuses}},
+            {"$set": {"status": "revoked", "revoked_at": revoked_at}},
+        )
+        if result.modified_count != 1:
+            raise HTTPException(status_code=409, detail="This request can no longer be withdrawn")
+        await db.pharmacy_request_assignments.update_many(
+            {"request_id": request_id, "status": {"$in": ["invited", "reviewing", "offered", "unavailable", "needs_clarification", "not_approved"]}},
+            {"$set": {"status": "revoked", "closed_at": revoked_at}},
+        )
+        await db.pharmacy_offers.update_many(
+            {"request_id": request_id, "status": "offered"},
+            {"$set": {"status": "revoked", "revoked_at": revoked_at}},
+        )
+        return {"id": request_id, "status": "revoked"}
 
     @router.get("/pharmacist/requests")
     async def list_pharmacist_requests(pharmacist: dict = Depends(current_pharmacist)) -> list:

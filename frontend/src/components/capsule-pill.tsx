@@ -20,11 +20,7 @@ export function CapsulePill({ size = 68 }: { size?: number }) {
           flexDirection: "row",
           overflow: "hidden",
           transform: [{ rotate: "-24deg" }],
-          shadowColor: colors.brandPrimary,
-          shadowOffset: { width: 0, height: 10 },
-          shadowOpacity: 0.22,
-          shadowRadius: 18,
-          elevation: 8,
+          boxShadow: "0px 10px 18px rgba(13, 148, 136, 0.22)",
         }}
       >
         <View style={{ flex: 1, backgroundColor: colors.brandPrimary }} />
@@ -40,10 +36,7 @@ export function CapsulePill({ size = 68 }: { size?: number }) {
           backgroundColor: colors.surface,
           alignItems: "center",
           justifyContent: "center",
-          shadowColor: colors.onSurface,
-          shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.08,
-          shadowRadius: 8,
+          boxShadow: "0px 4px 8px rgba(11, 37, 69, 0.08)",
         }}
       >
         <Ionicons name="add" size={size * 0.32} color={colors.brandPrimary} />

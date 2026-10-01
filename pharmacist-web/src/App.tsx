@@ -68,70 +68,19 @@ type CatalogMedicine = {
   carried: boolean;
 };
 
-const initialRequests: MedicineRequest[] = [
-  {
-    id: "JL-4821",
-    patient: "Ananya R.",
-    initials: "AR",
-    area: "Indiranagar, Bengaluru",
-    distance: "1.4 km",
-    received: "4 min ago",
-    deadline: "Respond in 11 min",
-    prescription: true,
-    prescriptionDecision: null,
-    status: "new",
-    medicines: [
-      { id: "med-1", name: "Amoxicillin", strength: "500 mg", form: "Capsule", quantity: 2, unit: "strip", quotePrice: 86 },
-      { id: "med-2", name: "Pantoprazole", strength: "40 mg", form: "Tablet", quantity: 1, unit: "strip", quotePrice: 74 },
-    ],
-  },
-  {
-    id: "JL-4818",
-    patient: "Rahul M.",
-    initials: "RM",
-    area: "Domlur, Bengaluru",
-    distance: "2.1 km",
-    received: "12 min ago",
-    deadline: "Respond in 6 min",
-    prescription: false,
-    prescriptionDecision: null,
-    status: "reviewing",
-    medicines: [
-      { id: "med-3", name: "Paracetamol", strength: "650 mg", form: "Tablet", quantity: 1, unit: "strip", quotePrice: 32 },
-    ],
-  },
-  {
-    id: "JL-4812",
-    patient: "Meera S.",
-    initials: "MS",
-    area: "HAL 2nd Stage, Bengaluru",
-    distance: "2.8 km",
-    received: "26 min ago",
-    deadline: "Offer sent",
-    prescription: true,
-    prescriptionDecision: "matches",
-    status: "offer sent",
-    medicines: [
-      { id: "med-4", name: "Cetirizine", strength: "10 mg", form: "Tablet", quantity: 1, unit: "strip", quotePrice: 42 },
-      { id: "med-5", name: "Vitamin D3", strength: "60,000 IU", form: "Capsule", quantity: 1, unit: "pack", quotePrice: 120 },
-    ],
-  },
-];
+const PHARMACY_TOKEN_KEY = "justlocal_pharmacy_token";
 
-const initialCatalog: CatalogMedicine[] = [
-  { id: "med-1", name: "Amoxicillin", strength: "500 mg", form: "Capsule · 10s", manufacturer: "Alkem", price: 86, carried: true },
-  { id: "med-2", name: "Pantoprazole", strength: "40 mg", form: "Tablet · 10s", manufacturer: "Sun Pharma", price: 74, carried: true },
-  { id: "med-3", name: "Paracetamol", strength: "650 mg", form: "Tablet · 15s", manufacturer: "Cipla", price: 32, carried: true },
-  { id: "med-4", name: "Cetirizine", strength: "10 mg", form: "Tablet · 10s", manufacturer: "Dr. Reddy's", price: 42, carried: true },
-  { id: "med-5", name: "Vitamin D3", strength: "60,000 IU", form: "Capsule · 4s", manufacturer: "Uprise", price: 120, carried: true },
-  { id: "med-6", name: "ORS powder", strength: "21.8 g", form: "Sachet", manufacturer: "Electral", price: 22, carried: false },
-  { id: "med-7", name: "Mupirocin", strength: "2%", form: "Ointment · 5 g", manufacturer: "T-Bact", price: 98, carried: false },
-];
+function readPharmacyToken(): string | null {
+  try {
+    return window.localStorage.getItem(PHARMACY_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
 
-const initialOrders = [
-  { id: "JL-4790", patient: "Ishaan K.", area: "Koramangala", items: "2 medicines", total: 168, status: "Preparing", placed: "Today, 10:42 am" },
-  { id: "JL-4776", patient: "Priya N.", area: "Indiranagar", items: "1 medicine", total: 42, status: "Ready for pickup", placed: "Today, 9:18 am" },
-];
+function isUnauthorized(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "status" in error && error.status === 401;
+}
 
 function timeAgo(value: string) {
   const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
@@ -160,7 +109,7 @@ function mapRequest(request: PharmacyRequest, catalog: PharmacyProduct[]): Medic
     patient,
     initials,
     area: "Delivery details shared after offer selection",
-    distance: `${request.distance_km.toFixed(1)} km`,
+    distance: request.distance_km == null ? "Distance unavailable" : `${request.distance_km.toFixed(1)} km`,
     received: timeAgo(request.created_at),
     deadline: request.offer ? "Offer sent" : minutesLeft ? `Respond in ${minutesLeft} min` : "Request expired",
     prescription: Boolean(request.prescription_id),
@@ -219,23 +168,23 @@ const navItems: { id: Page; label: string; icon: typeof LayoutDashboard }[] = [
 
 function App() {
   const [page, setPage] = useState<Page>("requests");
-  const [requests, setRequests] = useState(initialRequests);
-  const [catalog, setCatalog] = useState(initialCatalog);
-  const [orders, setOrders] = useState<WorkspaceOrder[]>(initialOrders.map((order) => ({ ...order, orderId: undefined })));
-  const [selectedId, setSelectedId] = useState(initialRequests[0].id);
+  const [requests, setRequests] = useState<MedicineRequest[]>([]);
+  const [catalog, setCatalog] = useState<CatalogMedicine[]>([]);
+  const [orders, setOrders] = useState<WorkspaceOrder[]>([]);
+  const [selectedId, setSelectedId] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All requests");
   const [isAvailable, setIsAvailable] = useState(true);
+  const [savingAvailability, setSavingAvailability] = useState(false);
+  const [updatingCarryId, setUpdatingCarryId] = useState<string | null>(null);
   const [isPrescriptionOpen, setPrescriptionOpen] = useState(false);
   const [isAddMedicineOpen, setAddMedicineOpen] = useState(false);
   const [toast, setToast] = useState("");
-  const [liveToken, setLiveToken] = useState<string | null>(null);
+  const [liveToken, setLiveToken] = useState<string | null>(readPharmacyToken);
   const [pharmacist, setPharmacist] = useState<{ name: string; email: string; pharmacy_id: string; pharmacy_name: string; area: string } | null>(null);
-  const [authOpen, setAuthOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(() => !readPharmacyToken());
   const [prescriptionData, setPrescriptionData] = useState<{ content_type: string; data_base64: string } | null>(null);
-  const isDemo = liveToken === null;
-
-  const selectedRequest = requests.find((request) => request.id === selectedId) ?? (isDemo ? requests[0] : null) ?? null;
+  const selectedRequest = requests.find((request) => request.id === selectedId) ?? null;
   const filteredRequests = useMemo(() => {
     const term = query.trim().toLowerCase();
     return requests.filter((request) => {
@@ -275,16 +224,30 @@ function App() {
       try {
         await refreshLiveData(liveToken);
       } catch (error) {
-        if (active) notify(error instanceof Error ? error.message : "Couldn't refresh pharmacy data.");
+        if (!active) return;
+        if (isUnauthorized(error)) {
+          window.localStorage.removeItem(PHARMACY_TOKEN_KEY);
+          setLiveToken(null);
+          setPharmacist(null);
+          setRequests([]);
+          setCatalog([]);
+          setOrders([]);
+          setSelectedId("");
+          setAuthOpen(true);
+          notify("Your sign-in expired. Please sign in again.");
+          return;
+        }
+        notify(error instanceof Error ? error.message : "Couldn't refresh pharmacy data.");
       }
     };
     void refresh();
-    const interval = window.setInterval(() => { if (page === "requests") void refresh(); }, 6000);
+    const interval = window.setInterval(() => void refresh(), 10000);
     return () => { active = false; window.clearInterval(interval); };
-  }, [liveToken, page]);
+  }, [liveToken]);
 
   async function signIn(email: string, password: string) {
     const result = await pharmacistApi.login(email, password);
+    window.localStorage.setItem(PHARMACY_TOKEN_KEY, result.token);
     setLiveToken(result.token);
     setPharmacist({ ...result.pharmacist, area: "" });
     setAuthOpen(false);
@@ -293,6 +256,7 @@ function App() {
       await refreshLiveData(result.token);
       notify(`Connected to ${result.pharmacist.pharmacy_name}.`);
     } catch (error) {
+      window.localStorage.removeItem(PHARMACY_TOKEN_KEY);
       setLiveToken(null);
       throw error;
     }
@@ -305,34 +269,36 @@ function App() {
 
   async function signOut() {
     if (liveToken) await pharmacistApi.logout(liveToken).catch(() => undefined);
+    window.localStorage.removeItem(PHARMACY_TOKEN_KEY);
     setLiveToken(null);
     setPharmacist(null);
-    setRequests(initialRequests);
-    setCatalog(initialCatalog);
-    setOrders(initialOrders.map((order) => ({ ...order, orderId: undefined })));
-    setSelectedId(initialRequests[0].id);
+    setRequests([]);
+    setCatalog([]);
+    setOrders([]);
+    setSelectedId("");
+    setAuthOpen(true);
     notify("Signed out of the pharmacy workspace.");
   }
 
   async function toggleAvailability() {
+    if (!liveToken) { setAuthOpen(true); return; }
     const next = !isAvailable;
-    if (liveToken) {
-      try {
-        const result = await pharmacistApi.setAvailability(liveToken, next);
-        setIsAvailable(result.accepting_requests);
-        notify(result.accepting_requests ? "Your pharmacy is accepting requests." : "New requests are paused.");
-      } catch (error) {
-        notify(error instanceof Error ? error.message : "Couldn't update availability.");
-      }
-      return;
+    setSavingAvailability(true);
+    try {
+      const result = await pharmacistApi.setAvailability(liveToken, next);
+      setIsAvailable(result.accepting_requests);
+      notify(result.accepting_requests ? "Your pharmacy is accepting requests." : "New requests are paused.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Couldn't update availability.");
+    } finally {
+      setSavingAvailability(false);
     }
-    setIsAvailable(next);
-    notify(next ? "Your pharmacy is accepting requests in this demo." : "New requests paused in this demo.");
   }
 
   async function openPrescriptionReview() {
     if (!selectedRequest) return;
-    if (liveToken && selectedRequest.prescription) {
+    if (!liveToken) { setAuthOpen(true); return; }
+    if (selectedRequest.prescription) {
       try {
         const prescription = await pharmacistApi.prescription(liveToken, selectedRequest.id);
         setPrescriptionData(prescription);
@@ -345,24 +311,30 @@ function App() {
   }
 
   async function toggleCarried(medicineId: string) {
+    if (!liveToken) { setAuthOpen(true); return; }
     const medicine = catalog.find((item) => item.id === medicineId);
     if (!medicine) return;
-    if (liveToken) {
-      try {
-        await pharmacistApi.updateCarry(liveToken, medicineId, { carried: !medicine.carried });
-        setCatalog((current) => current.map((item) => item.id === medicineId ? { ...item, carried: !item.carried } : item));
-      } catch (error) {
-        notify(error instanceof Error ? error.message : "Couldn't update carry list.");
+    setUpdatingCarryId(medicineId);
+    try {
+      if (medicine.carried) {
+        await pharmacistApi.updateCarry(liveToken, medicineId, { carried: false });
+      } else {
+        await pharmacistApi.saveCarry(liveToken, medicineId, medicine.price);
       }
-      return;
+      await refreshLiveData(liveToken);
+      notify(medicine.carried ? "Medicine removed from your carry list." : "Medicine added to your carry list.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Couldn't update carry list.");
+    } finally {
+      setUpdatingCarryId(null);
     }
-    setCatalog((current) => current.map((item) => item.id === medicineId ? { ...item, carried: !item.carried } : item));
   }
 
   async function persistPrice(medicineId: string, price: number) {
-    if (!liveToken) return;
+    if (!liveToken) { setAuthOpen(true); return; }
     try {
       await pharmacistApi.updateCarry(liveToken, medicineId, { price });
+      await refreshLiveData(liveToken);
       notify("Pharmacy price saved.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Couldn't save pharmacy price.");
@@ -376,12 +348,13 @@ function App() {
 
   async function savePrescriptionDecision(decision: Exclude<PrescriptionDecision, null>) {
     if (!selectedRequest) return;
+    if (!liveToken) { setAuthOpen(true); return; }
     try {
-      if (liveToken) await pharmacistApi.reviewPrescription(liveToken, selectedRequest.id, decision);
+      await pharmacistApi.reviewPrescription(liveToken, selectedRequest.id, decision);
       updateRequest(selectedRequest.id, { prescriptionDecision: decision, status: selectedRequest.status === "new" ? "reviewing" : selectedRequest.status });
       setPrescriptionOpen(false);
       setPrescriptionData(null);
-      notify(liveToken ? "Prescription decision recorded." : "Decision recorded in this demo.");
+      notify("Prescription decision recorded.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Couldn't record the prescription decision.");
     }
@@ -389,6 +362,7 @@ function App() {
 
   async function sendOffer() {
     if (!selectedRequest) return;
+    if (!liveToken) { setAuthOpen(true); return; }
     if (selectedRequest.prescription && selectedRequest.prescriptionDecision !== "matches") {
       notify("Confirm that the prescription matches before sending an offer.");
       return;
@@ -398,19 +372,14 @@ function App() {
       return;
     }
     try {
-      if (liveToken) {
-        await pharmacistApi.respond(liveToken, selectedRequest.id, {
-          availability: "available",
-          prescription_decision: selectedRequest.prescription ? selectedRequest.prescriptionDecision ?? undefined : undefined,
-          items: selectedRequest.medicines.map((medicine) => ({ medicine_id: medicine.id, quantity: medicine.quantity })),
-          eta_minutes: 30,
-        });
-        await refreshLiveData(liveToken);
-        notify(`Offer sent for ${selectedRequest.id}.`);
-      } else {
-        updateRequest(selectedRequest.id, { status: "offer sent" });
-        notify(`Offer sent for ${selectedRequest.id} in this demo.`);
-      }
+      await pharmacistApi.respond(liveToken, selectedRequest.id, {
+        availability: "available",
+        prescription_decision: selectedRequest.prescription ? selectedRequest.prescriptionDecision ?? undefined : undefined,
+        items: selectedRequest.medicines.map((medicine) => ({ medicine_id: medicine.id, quantity: medicine.quantity })),
+        eta_minutes: 30,
+      });
+      await refreshLiveData(liveToken);
+      notify(`Offer sent for ${selectedRequest.id}.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Couldn't send the offer.");
     }
@@ -418,19 +387,15 @@ function App() {
 
   async function declineRequest() {
     if (!selectedRequest) return;
+    if (!liveToken) { setAuthOpen(true); return; }
     try {
-      if (liveToken) {
-        await pharmacistApi.respond(liveToken, selectedRequest.id, {
-          availability: "unavailable",
-          prescription_decision: selectedRequest.prescription ? selectedRequest.prescriptionDecision ?? undefined : undefined,
-          items: [],
-        });
-        await refreshLiveData(liveToken);
-        notify(`Request ${selectedRequest.id} declined.`);
-      } else {
-        updateRequest(selectedRequest.id, { status: "declined" });
-        notify(`Request ${selectedRequest.id} declined in this demo.`);
-      }
+      await pharmacistApi.respond(liveToken, selectedRequest.id, {
+        availability: "unavailable",
+        prescription_decision: selectedRequest.prescription ? selectedRequest.prescriptionDecision ?? undefined : undefined,
+        items: [],
+      });
+      await refreshLiveData(liveToken);
+      notify(`Request ${selectedRequest.id} declined.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Couldn't decline this request.");
     }
@@ -456,20 +421,29 @@ function App() {
   }
 
   async function advanceOrder(order: WorkspaceOrder) {
+    if (!liveToken) { setAuthOpen(true); return; }
+    if (!order.orderId) return;
     const nextStatus = order.status === "Pharmacy Confirmed" ? "Preparing" : order.status === "Preparing" ? "Out for Delivery" : order.status === "Out for Delivery" ? "Delivered" : null;
     if (!nextStatus) return;
-    if (liveToken && order.orderId) {
-      try {
-        await pharmacistApi.updateOrder(liveToken, order.orderId, nextStatus);
-        await refreshLiveData(liveToken);
-        notify(`${order.id} updated to ${nextStatus}.`);
-      } catch (error) {
-        notify(error instanceof Error ? error.message : "Couldn't update order.");
-      }
-      return;
+    try {
+      await pharmacistApi.updateOrder(liveToken, order.orderId, nextStatus);
+      await refreshLiveData(liveToken);
+      notify(`${order.id} updated to ${nextStatus}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Couldn't update order.");
     }
-    setOrders((current) => current.map((item) => item.id === order.id ? { ...item, status: nextStatus } : item));
-    notify(`${order.id} updated in this demo.`);
+  }
+
+  async function addMedicineToCarry(id: string, price: number) {
+    if (!liveToken) { setAuthOpen(true); return; }
+    try {
+      await pharmacistApi.saveCarry(liveToken, id, price);
+      await refreshLiveData(liveToken);
+      setAddMedicineOpen(false);
+      notify("Medicine added to your carry list.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Couldn't add medicine.");
+    }
   }
 
   const title = page === "requests" ? "Customer requests" : page === "catalog" ? "Medicines we carry" : "Orders";
@@ -489,7 +463,7 @@ function App() {
         <div className="workspace-label">PHARMACY WORKSPACE</div>
         <div className="pharmacy-switcher">
           <div className="store-avatar"><Store size={17} /></div>
-          <div className="pharmacy-switcher-copy"><strong>{pharmacist?.pharmacy_name ?? "Namma Care Pharmacy"}</strong><span>{pharmacist?.area || "Sample pharmacy · Bengaluru"}</span></div>
+          <div className="pharmacy-switcher-copy"><strong>{pharmacist?.pharmacy_name ?? "Pharmacy account required"}</strong><span>{pharmacist?.area || "Sign in to load branch details"}</span></div>
           <ChevronDown size={15} className="muted-icon" />
         </div>
 
@@ -507,9 +481,9 @@ function App() {
         <div className="sidebar-bottom">
           <div className="support-link"><CircleHelp size={17} /><span>Help & support</span><ArrowUpRightIcon /></div>
           <div className="profile-block">
-            <div className="profile-avatar">{pharmacist?.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() ?? "RK"}</div>
-            <div className="profile-copy"><strong>{pharmacist?.name ?? "Sample pharmacist"}</strong><span>{isDemo ? "Preview mode" : pharmacist?.email}</span></div>
-            <button className="icon-button quiet" aria-label={isDemo ? "Sign in" : "Sign out"} onClick={() => isDemo ? setAuthOpen(true) : void signOut()}>{isDemo ? <ChevronDown size={16} /> : <X size={16} />}</button>
+            <div className="profile-avatar">{pharmacist?.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() ?? "JL"}</div>
+            <div className="profile-copy"><strong>{pharmacist?.name ?? "Not signed in"}</strong><span>{pharmacist?.email ?? "Pharmacist account"}</span></div>
+            <button className="icon-button quiet" aria-label={liveToken ? "Sign out" : "Sign in"} onClick={() => liveToken ? void signOut() : setAuthOpen(true)}>{liveToken ? <X size={16} /> : <ChevronDown size={16} />}</button>
           </div>
         </div>
       </aside>
@@ -519,17 +493,17 @@ function App() {
           <div className="mobile-brand"><span className="capsule-mark"><span /><i>+</i></span><span className="brand-name">Just<span>local</span></span></div>
           <div className="breadcrumb"><span>Workspace</span><ChevronRight size={14} /><strong>{title}</strong></div>
           <div className="topbar-actions">
-            <div className="branch-state"><span className="state-dot" /><span>{pharmacist?.area || "Indiranagar branch"}</span></div>
-            <button className="icon-button notification-button" aria-label="Notifications" onClick={() => notify("You're all caught up in this demo.")}><Bell size={18} /><i /></button>
-            <button className="top-profile" aria-label={isDemo ? "Connect pharmacy account" : "Sign out"} onClick={() => isDemo ? setAuthOpen(true) : void signOut()}><span className="profile-avatar small">{pharmacist?.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() ?? "RK"}</span>{isDemo ? <ChevronDown size={15} /> : <X size={15} />}</button>
+            <div className="branch-state"><span className="state-dot" /><span>{pharmacist?.area || "No branch connected"}</span></div>
+            <button className="icon-button notification-button" aria-label="Notifications" onClick={() => notify("No new notifications.")}><Bell size={18} /></button>
+            <button className="top-profile" aria-label={liveToken ? "Sign out" : "Sign in"} onClick={() => liveToken ? void signOut() : setAuthOpen(true)}><span className="profile-avatar small">{pharmacist?.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() ?? "JL"}</span>{liveToken ? <X size={15} /> : <ChevronDown size={15} />}</button>
           </div>
         </header>
 
         <div className="page-content">
-          <div className={`demo-banner ${isDemo ? "" : "live-banner"}`}><span className="demo-dot" /><strong>{isDemo ? "DEMO WORKSPACE" : "LIVE PHARMACY"}</strong><span>{isDemo ? "Sample data only. Changes stay in this browser and are not sent to a pharmacy." : `Connected to ${pharmacist?.pharmacy_name ?? "your verified pharmacy"}.`}</span>{isDemo && <button className="banner-action" onClick={() => setAuthOpen(true)}>Connect account <ArrowRight size={13} /></button>}</div>
+          <div className={`workspace-banner ${liveToken ? "live-banner" : ""}`}><span className="connection-dot" /><strong>{liveToken ? "LIVE PHARMACY" : "SIGN-IN REQUIRED"}</strong><span>{liveToken ? `Connected to ${pharmacist?.pharmacy_name ?? "your pharmacy"}.` : "Sign in with your verified pharmacy account to load live requests and orders."}</span>{!liveToken && <button className="banner-action" onClick={() => setAuthOpen(true)}>Sign in <ArrowRight size={13} /></button>}</div>
           <div className="page-heading">
-            <div><div className="eyebrow">WEDNESDAY, 30 SEPTEMBER</div><h1>{title}</h1><p>{subtitle}</p></div>
-            {page === "requests" && <button className={`availability-toggle ${isAvailable ? "on" : ""}`} onClick={() => void toggleAvailability()}><span className="toggle-track"><i /></span><span>{isAvailable ? "Accepting requests" : "Paused"}</span><ChevronDown size={14} /></button>}
+            <div><div className="eyebrow">{new Intl.DateTimeFormat("en", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase()}</div><h1>{title}</h1><p>{subtitle}</p></div>
+            {page === "requests" && <button className={`availability-toggle ${isAvailable ? "on" : ""}`} onClick={() => void toggleAvailability()} disabled={savingAvailability}><span className="toggle-track"><i /></span><span>{savingAvailability ? "Saving…" : isAvailable ? "Accepting requests" : "Paused"}</span><ChevronDown size={14} /></button>}
             {page === "catalog" && <button className="button button-primary" onClick={() => setAddMedicineOpen(true)}><Plus size={17} /> Add medicine</button>}
           </div>
 
@@ -550,18 +524,13 @@ function App() {
             catalog={catalog}
             onAddOfferMedicine={addOfferMedicine}
           />}
-              {page === "catalog" && <CatalogPage catalog={catalog} query={query} onQuery={setQuery} onToggle={toggleCarried} onPrice={updatePrice} onCommitPrice={persistPrice} onNotify={notify} />}
-              {page === "orders" && <OrdersPage orders={orders} onAdvance={advanceOrder} isDemo={isDemo} />}
+              {page === "catalog" && <CatalogPage catalog={catalog} query={query} onQuery={setQuery} onToggle={toggleCarried} updatingMedicineId={updatingCarryId} onPrice={updatePrice} onCommitPrice={persistPrice} onNotify={notify} />}
+              {page === "orders" && <OrdersPage orders={orders} onAdvance={advanceOrder} />}
         </div>
       </main>
 
-      {selectedRequest && isPrescriptionOpen && <PrescriptionDialog request={selectedRequest} prescriptionData={prescriptionData} isDemo={isDemo} onClose={() => setPrescriptionOpen(false)} onDecision={savePrescriptionDecision} />}
-      {isAddMedicineOpen && <AddMedicineDialog catalog={catalog} onClose={() => setAddMedicineOpen(false)} onAdd={(id, price) => {
-        setCatalog((current) => current.map((medicine) => medicine.id === id ? { ...medicine, carried: true, price } : medicine));
-        setAddMedicineOpen(false);
-        if (liveToken) void pharmacistApi.saveCarry(liveToken, id, price).then(() => refreshLiveData(liveToken)).then(() => notify("Medicine added to your carry list.")).catch((error) => notify(error instanceof Error ? error.message : "Couldn't add medicine."));
-        else notify("Medicine added to your carry list in this demo.");
-      }} />}
+      {selectedRequest && isPrescriptionOpen && <PrescriptionDialog request={selectedRequest} prescriptionData={prescriptionData} onClose={() => setPrescriptionOpen(false)} onDecision={savePrescriptionDecision} />}
+      {isAddMedicineOpen && <AddMedicineDialog catalog={catalog} onClose={() => setAddMedicineOpen(false)} onAdd={addMedicineToCarry} />}
       {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onLogin={signIn} onRegister={registerPharmacy} />}
       {toast && <div role="status" className="toast"><CheckCircle2 size={17} />{toast}</div>}
     </div>
@@ -629,12 +598,12 @@ function RequestsPage({
               </button>
             ))}
           </div>
-          <div className="queue-footer"><ShieldCheck size={15} /><span>Requests go to up to 5 nearby pharmacies</span></div>
+          <div className="queue-footer"><ShieldCheck size={15} /><span>Requests are shared with every verified pharmacy accepting requests</span></div>
         </div>
 
         <div className="detail-panel">
           {selectedRequest ? <>
-            <div className="detail-header"><div><div className="detail-ref">REQUEST <span>{selectedRequest.id}</span><span className={`status-tag status-${selectedRequest.status.replace(" ", "-")}`}>{selectedRequest.status}</span></div><h2>{selectedRequest.patient}</h2><div className="detail-location"><MapPin size={14} />{selectedRequest.area}<span>·</span>{selectedRequest.distance}</div></div><button className="icon-button quiet" aria-label="More request actions" onClick={() => onNotify("Request actions are available in the demo flow.")}><Menu size={18} /></button></div>
+            <div className="detail-header"><div><div className="detail-ref">REQUEST <span>{selectedRequest.id}</span><span className={`status-tag status-${selectedRequest.status.replace(" ", "-")}`}>{selectedRequest.status}</span></div><h2>{selectedRequest.patient}</h2><div className="detail-location"><MapPin size={14} />{selectedRequest.area}<span>·</span>{selectedRequest.distance}</div></div><button className="icon-button quiet" aria-label="More request actions" onClick={() => onNotify("No additional actions are available for this request.")}><Menu size={18} /></button></div>
             <div className="request-timing"><Clock3 size={15} /><span>{selectedRequest.deadline}</span><span className="timing-separator" /><span>Received {selectedRequest.received}</span></div>
 
             {selectedRequest.prescriptionOnly && <PrescriptionProductPicker catalog={catalog} requestId={selectedRequest.id} onAdd={onAddOfferMedicine} />}
@@ -655,7 +624,7 @@ function RequestsPage({
               </div>
             </div>
 
-            {selectedRequest.prescription && <div className={`prescription-notice ${selectedRequest.prescriptionDecision === "matches" ? "reviewed" : ""}`}><div className="rx-icon"><FileImage size={18} /></div><div className="rx-copy"><strong>{selectedRequest.prescriptionDecision === "matches" ? "Prescription matches request" : selectedRequest.prescriptionDecision === "clarification" ? "Clarification needed" : selectedRequest.prescriptionDecision === "not-approved" ? "Prescription not approved" : "Prescription needs review"}</strong><span>{selectedRequest.prescriptionDecision ? "Decision recorded by the pharmacist in this demo." : "Compare the prescription with the requested medicine before responding."}</span></div><button className="button button-secondary button-small" onClick={onReview}>{selectedRequest.prescriptionDecision ? "Update review" : "Review"}<ChevronRight size={14} /></button></div>}
+            {selectedRequest.prescription && <div className={`prescription-notice ${selectedRequest.prescriptionDecision === "matches" ? "reviewed" : ""}`}><div className="rx-icon"><FileImage size={18} /></div><div className="rx-copy"><strong>{selectedRequest.prescriptionDecision === "matches" ? "Prescription matches request" : selectedRequest.prescriptionDecision === "clarification" ? "Clarification needed" : selectedRequest.prescriptionDecision === "not-approved" ? "Prescription not approved" : "Prescription needs review"}</strong><span>{selectedRequest.prescriptionDecision ? "Decision recorded by your pharmacy." : "Compare the prescription with the requested medicine before responding."}</span></div><button className="button button-secondary button-small" onClick={onReview}>{selectedRequest.prescriptionDecision ? "Update review" : "Review"}<ChevronRight size={14} /></button></div>}
 
             <div className="offer-composer">
               <div className="offer-composer-heading">
@@ -699,7 +668,7 @@ function PrescriptionProductPicker({ catalog, requestId, onAdd }: { catalog: Cat
   );
 }
 
-function CatalogPage({ catalog, query, onQuery, onToggle, onPrice, onCommitPrice, onNotify }: { catalog: CatalogMedicine[]; query: string; onQuery: (value: string) => void; onToggle: (id: string) => void; onPrice: (id: string, value: string) => void; onCommitPrice: (id: string, value: number) => void; onNotify: (message: string) => void }) {
+function CatalogPage({ catalog, query, onQuery, onToggle, updatingMedicineId, onPrice, onCommitPrice, onNotify }: { catalog: CatalogMedicine[]; query: string; onQuery: (value: string) => void; onToggle: (id: string) => void; updatingMedicineId: string | null; onPrice: (id: string, value: string) => void; onCommitPrice: (id: string, value: number) => void; onNotify: (message: string) => void }) {
   const term = query.trim().toLowerCase();
   const visible = catalog.filter((medicine) => [medicine.name, medicine.strength, medicine.manufacturer, medicine.form].join(" ").toLowerCase().includes(term));
   const carriedCount = catalog.filter((medicine) => medicine.carried).length;
@@ -707,24 +676,23 @@ function CatalogPage({ catalog, query, onQuery, onToggle, onPrice, onCommitPrice
   return (
     <section className="catalog-panel">
       <div className="catalog-toolbar"><div className="catalog-summary"><span className="catalog-count">{carriedCount}</span><span>medicines on your carry list</span><span className="summary-divider" /><span>Prices are set by your pharmacy</span></div><label className="search-field catalog-search"><Search size={16} /><input aria-label="Search medicine catalog" placeholder="Search by medicine or brand" value={query} onChange={(event) => onQuery(event.target.value)} /><kbd>/</kbd></label></div>
-      <div className="catalog-table-wrap"><table className="catalog-table"><thead><tr><th>MEDICINE</th><th>MANUFACTURER</th><th>YOUR PRICE</th><th>WE CARRY THIS</th><th aria-label="Actions" /></tr></thead><tbody>{visible.map((medicine) => <tr key={medicine.id} className={!medicine.carried ? "not-carried" : ""}><td><div className="catalog-product"><span className="medicine-symbol small-symbol"><HeartPulse size={15} /></span><span><strong>{medicine.name}</strong><small>{medicine.strength} · {medicine.form}</small></span></div></td><td className="manufacturer-cell">{medicine.manufacturer}</td><td><label className="price-input"><span>₹</span><input aria-label={`${medicine.name} price`} type="number" min="0" step="0.01" value={medicine.price} onChange={(event) => onPrice(medicine.id, event.target.value)} onBlur={(event) => onCommitPrice(medicine.id, Number(event.currentTarget.value))} /></label></td><td><button className={`carry-toggle ${medicine.carried ? "checked" : ""}`} role="switch" aria-checked={medicine.carried} aria-label={`${medicine.carried ? "Remove" : "Add"} ${medicine.name} ${medicine.carried ? "from" : "to"} carry list`} onClick={() => onToggle(medicine.id)}><span /><strong>{medicine.carried ? "Carried" : "Not carried"}</strong></button></td><td><button className="icon-button quiet row-action" aria-label={`Edit ${medicine.name}`} onClick={() => onNotify("Update the price directly in the price field.")}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty-state catalog-empty"><Search size={22} /><strong>No medicines found</strong><span>Try the generic name, brand, or manufacturer.</span></div>}</div>
+      <div className="catalog-table-wrap"><table className="catalog-table"><thead><tr><th>MEDICINE</th><th>MANUFACTURER</th><th>YOUR PRICE</th><th>WE CARRY THIS</th><th aria-label="Actions" /></tr></thead><tbody>{visible.map((medicine) => <tr key={medicine.id} className={!medicine.carried ? "not-carried" : ""}><td><div className="catalog-product"><span className="medicine-symbol small-symbol"><HeartPulse size={15} /></span><span><strong>{medicine.name}</strong><small>{medicine.strength} · {medicine.form}</small></span></div></td><td className="manufacturer-cell">{medicine.manufacturer}</td><td><label className="price-input"><span>₹</span><input aria-label={`${medicine.name} price`} type="number" min="0" step="0.01" value={medicine.price} onChange={(event) => onPrice(medicine.id, event.target.value)} onBlur={(event) => onCommitPrice(medicine.id, Number(event.currentTarget.value))} /></label></td><td><button className={`carry-toggle ${medicine.carried ? "checked" : ""}`} role="switch" aria-checked={medicine.carried} aria-label={`${medicine.carried ? "Remove" : "Add"} ${medicine.name} ${medicine.carried ? "from" : "to"} carry list`} disabled={updatingMedicineId === medicine.id} onClick={() => onToggle(medicine.id)}><span /><strong>{updatingMedicineId === medicine.id ? "Saving…" : medicine.carried ? "Carried" : "Not carried"}</strong></button></td><td><button className="icon-button quiet row-action" aria-label={`Edit ${medicine.name}`} onClick={() => onNotify("Update the price directly in the price field.")}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty-state catalog-empty"><Search size={22} /><strong>No medicines found</strong><span>Try the generic name, brand, or manufacturer.</span></div>}</div>
       <div className="catalog-footnote"><ShieldCheck size={15} /><span>Carry list helps route requests. You confirm actual availability for every request.</span><span className="footnote-end">No stock quantities are collected.</span></div>
     </section>
   );
 }
 
-function OrdersPage({ orders, onAdvance, isDemo }: { orders: WorkspaceOrder[]; onAdvance: (order: WorkspaceOrder) => void; isDemo: boolean }) {
+function OrdersPage({ orders, onAdvance }: { orders: WorkspaceOrder[]; onAdvance: (order: WorkspaceOrder) => void }) {
   const nextAction: Record<string, string> = { "Pharmacy Confirmed": "Start preparing", Preparing: "Out for delivery", "Out for Delivery": "Mark delivered" };
   return (
     <section className="orders-panel">
       <div className="orders-heading"><div><h2>Accepted offers</h2><span>Orders are created after customers choose your offer.</span></div><div className="orders-filter"><span className="state-dot" /> Active orders <ChevronDown size={14} /></div></div>
       {orders.length ? <div className="orders-table-wrap"><table className="orders-table"><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ITEMS</th><th>TOTAL</th><th>STATUS</th><th /></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><strong>{order.id}</strong><small>{order.placed}</small></td><td>{order.patient}<small>{order.area}</small></td><td>{order.items}</td><td>₹{order.total}</td><td><span className={`order-status ${order.status === "Delivered" ? "ready" : "preparing"}`}><span />{order.status}</span></td><td>{nextAction[order.status] && <button className="button button-secondary button-small" onClick={() => onAdvance(order)}>{nextAction[order.status]}</button>}</td></tr>)}</tbody></table></div> : <div className="empty-state"><PackageCheck size={22} /><strong>No orders yet</strong><span>Orders will appear when a customer accepts one of your offers.</span></div>}
-      {isDemo && <div className="orders-demo-note"><span className="demo-dot" /> Sample orders shown for the prototype</div>}
     </section>
   );
 }
 
-function PrescriptionDialog({ request, prescriptionData, isDemo, onClose, onDecision }: { request: MedicineRequest; prescriptionData: { content_type: string; data_base64: string } | null; isDemo: boolean; onClose: () => void; onDecision: (decision: Exclude<PrescriptionDecision, null>) => void }) {
+function PrescriptionDialog({ request, prescriptionData, onClose, onDecision }: { request: MedicineRequest; prescriptionData: { content_type: string; data_base64: string } | null; onClose: () => void; onDecision: (decision: Exclude<PrescriptionDecision, null>) => void }) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="dialog rx-dialog" role="dialog" aria-modal="true" aria-labelledby="rx-title">
@@ -732,10 +700,9 @@ function PrescriptionDialog({ request, prescriptionData, isDemo, onClose, onDeci
           <div><span className="section-label-text">PHARMACIST REVIEW</span><h2 id="rx-title">Prescription · {request.id}</h2></div>
           <button className="icon-button quiet" aria-label="Close prescription review" onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="privacy-strip"><ShieldCheck size={16} /><span>Shared with this pharmacy for this request only. This sample preview contains no patient document.</span></div>
-        {prescriptionData ? <div className="document-placeholder"><img className="prescription-image" src={prescriptionImage(prescriptionData)} alt="Customer-uploaded prescription for pharmacist review" /></div> : <div className="document-placeholder"><div className="document-page"><div className="document-brand"><span className="document-mark">+</span><span>Prescription preview</span></div><div className="document-line short" /><div className="document-line" /><div className="document-line medium" /><div className="document-rx">Rx</div><div className="document-line" /><div className="document-line short" /><div className="document-line medium" /><div className="document-signature">Sample document placeholder</div></div></div>}
+        <div className="privacy-strip"><ShieldCheck size={16} /><span>Prescription submitted for this request. Handle patient information according to your pharmacy's privacy policy.</span></div>
+        {prescriptionData ? <div className="document-placeholder"><img className="prescription-image" src={prescriptionImage(prescriptionData)} alt="Customer-uploaded prescription for pharmacist review" /></div> : <div className="document-placeholder"><span>Prescription image is unavailable.</span></div>}
         <div className="review-check"><span className="review-check-icon"><Stethoscope size={17} /></span><div><strong>Clinical decision stays with the pharmacist</strong><span>Compare the prescribed medicine, strength, and form with the request. This website does not interpret prescriptions.</span></div></div>
-        {isDemo && <div className="decision-note">Demo only: the preview is not a real prescription. These actions only demonstrate the review workflow.</div>}
         <div className="dialog-actions review-actions">
           <button className="button button-quiet" onClick={onClose}>Close</button>
           <button className="button button-secondary" onClick={() => onDecision("clarification")}>Needs clarification</button>
@@ -759,7 +726,7 @@ function AddMedicineDialog({ catalog, onClose, onAdd }: { catalog: CatalogMedici
     setPrice(medicine ? String(medicine.price) : "");
   }
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="dialog add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-title"><div className="dialog-header"><div><span className="section-label-text">PHARMACY CATALOG</span><h2 id="add-title">Add a medicine you carry</h2></div><button className="icon-button quiet" aria-label="Close add medicine dialog" onClick={onClose}><X size={18} /></button></div><p className="dialog-intro">Choose a product from the shared demo catalog and set your pharmacy's price.</p><label className="form-label">Medicine<select value={selectedId} onChange={(event) => choose(event.target.value)}>{available.length ? available.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.name} · {medicine.strength} · {medicine.manufacturer}</option>) : <option value="">No unlisted medicines available</option>}</select></label><label className="form-label">Your price<div className="currency-input"><span>₹</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></div></label><div className="no-quantity-note"><CheckCircle2 size={16} /><span>This adds the medicine to your carry list. You won't be asked for a stock count.</span></div><div className="dialog-actions"><button className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={!selectedId || Number(price) <= 0} onClick={() => onAdd(selectedId, Number(price))}><Plus size={16} />Add to carry list</button></div></section></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="dialog add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-title"><div className="dialog-header"><div><span className="section-label-text">PHARMACY CATALOG</span><h2 id="add-title">Add a medicine you carry</h2></div><button className="icon-button quiet" aria-label="Close add medicine dialog" onClick={onClose}><X size={18} /></button></div><p className="dialog-intro">Choose a product from the medicine catalog and set your pharmacy's price.</p><label className="form-label">Medicine<select value={selectedId} onChange={(event) => choose(event.target.value)}>{available.length ? available.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.name} · {medicine.strength} · {medicine.manufacturer}</option>) : <option value="">No unlisted medicines available</option>}</select></label><label className="form-label">Your price<div className="currency-input"><span>₹</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></div></label><div className="no-quantity-note"><CheckCircle2 size={16} /><span>This adds the medicine to your carry list. You won't be asked for a stock count.</span></div><div className="dialog-actions"><button className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={!selectedId || Number(price) <= 0} onClick={() => onAdd(selectedId, Number(price))}><Plus size={16} />Add to carry list</button></div></section></div>;
 }
 
 export default App;

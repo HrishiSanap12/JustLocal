@@ -1,0 +1,1 @@
+export type MapCoordinate = { latitude: number; longitude: number };

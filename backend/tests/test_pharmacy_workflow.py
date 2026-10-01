@@ -86,6 +86,15 @@ def test_prescription_request_offer_selection_and_order_lifecycle(pharmacy_test_
         timeout=15,
     )
     assert verified.status_code == 200, verified.text
+    nearby_pharmacies = requests.get(
+        f"{api}/pharmacies",
+        params={"latitude": 12.9784, "longitude": 77.6408},
+        timeout=15,
+    )
+    assert nearby_pharmacies.status_code == 200, nearby_pharmacies.text
+    test_pharmacy = next((item for item in nearby_pharmacies.json() if item["id"] == pharmacy_id), None)
+    assert test_pharmacy is not None
+    assert test_pharmacy["distance_km"] == 0
     login = requests.post(
         f"{api}/pharmacist/auth/login",
         json={"email": f"pharmacist-{suffix}@justlocal.test", "password": "TestPharmacist123!"},
@@ -152,7 +161,9 @@ def test_prescription_request_offer_selection_and_order_lifecycle(pharmacy_test_
     )
     assert created.status_code == 200, created.text
     request_id = created.json()["id"]
-    assert created.json()["matched_pharmacy_count"] >= 1
+    database = MongoClient(os.environ["MONGO_URL"])[os.environ.get("DB_NAME", "justlocal")]
+    accepting_count = database.pharmacies.count_documents({"verification_status": "verified", "accepting_requests": True})
+    assert created.json()["matched_pharmacy_count"] == accepting_count
 
     requests_for_pharmacy = requests.get(f"{api}/pharmacist/requests", headers=pharmacist_headers, timeout=15)
     assert requests_for_pharmacy.status_code == 200, requests_for_pharmacy.text
@@ -207,6 +218,25 @@ def test_prescription_request_offer_selection_and_order_lifecycle(pharmacy_test_
     pharmacy_orders = requests.get(f"{api}/pharmacist/orders", headers=pharmacist_headers, timeout=15)
     assert pharmacy_orders.status_code == 200, pharmacy_orders.text
     assert any(item["id"] == order["id"] for item in pharmacy_orders.json())
+
+    revocable = requests.post(
+        f"{api}/medicine-requests",
+        headers=customer_headers,
+        json={
+            "items": [{"requested_name": f"Test medicine {suffix}", "quantity": 1}],
+            "address": f"WORKFLOW-TEST-{suffix}, 12 Test Road, Indiranagar, Bengaluru",
+            "latitude": 12.9784,
+            "longitude": 77.6408,
+        },
+        timeout=15,
+    )
+    assert revocable.status_code == 200, revocable.text
+    revoke = requests.delete(f"{api}/medicine-requests/{revocable.json()['id']}", headers=customer_headers, timeout=15)
+    assert revoke.status_code == 200, revoke.text
+    assert revoke.json()["status"] == "revoked"
+    remaining_for_pharmacy = requests.get(f"{api}/pharmacist/requests", headers=pharmacist_headers, timeout=15)
+    assert remaining_for_pharmacy.status_code == 200, remaining_for_pharmacy.text
+    assert all(item["id"] != revocable.json()["id"] for item in remaining_for_pharmacy.json())
 
     anonymous = requests.get(f"{api}/pharmacist/requests", timeout=10)
     assert anonymous.status_code == 401
