@@ -157,12 +157,83 @@ export const api = {
   razorpayConfig: () => request<{ ready: boolean; key_id: string }>("/payments/razorpay/config"),
   razorpayOrder: (token: string, order_id: string) => request<RazorpayCheckout>("/payments/razorpay/order", { method: "POST", body: JSON.stringify({ order_id }) }, token),
   razorpayVerify: (token: string, body: object) => request<{ ok: boolean; status: string }>("/payments/razorpay/verify", { method: "POST", body: JSON.stringify(body) }, token),
-  uploadPrescription: async (token: string, uri: string, name: string) => {
-    const form = new FormData();
-    form.append("file", { uri, type: "image/jpeg", name } as unknown as Blob);
-    const response = await fetch(`${API_URL}/api/prescriptions`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail ?? "Prescription upload failed");
-    return payload as { id: string; filename: string; status: string };
-  },
+  uploadPrescription: async (
+  token: string,
+  uri: string,
+  name: string
+) => {
+  const form = new FormData();
+
+  if (typeof window !== "undefined") {
+    // WEB / CHROME
+    const blobResponse = await fetch(uri);
+    const blob = await blobResponse.blob();
+
+    form.append(
+      "file",
+      blob,
+      name || "prescription.jpg"
+    );
+  } else {
+    // ANDROID / IOS
+    form.append(
+      "file",
+      {
+        uri,
+        type: "image/jpeg",
+        name: name || "prescription.jpg",
+      } as any
+    );
+  }
+
+  const response = await fetch(
+    `${API_URL}/api/prescriptions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: form,
+    }
+  );
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      payload.detail ||
+      `Prescription upload failed (${response.status})`
+    );
+  }
+
+  return payload as {
+    id: string;
+    filename: string;
+    status: string;
+  };
+},
+  analyzePrescription: async (
+  token: string,
+  prescriptionId: string
+) => {
+  const response = await fetch(
+    `${API_URL}/api/prescriptions/${prescriptionId}/analyze`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      payload.detail ?? "Prescription analysis failed"
+    );
+  }
+
+  return payload;
+},
 };

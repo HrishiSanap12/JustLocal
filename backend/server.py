@@ -540,6 +540,357 @@ async def upload_prescription(file: UploadFile = File(...), user: dict = Depends
     await db.prescriptions.insert_one(prescription)
     return {"id": prescription["id"], "filename": prescription["filename"], "status": prescription["status"]}
 
+def extract_medicines(raw_text: str, structured_medicine=None):
+    """
+    Extract medicine information from prescription OCR text.
+
+    Returns:
+    [
+        {
+            "name": "...",
+            "strength": "...",
+            "frequency": "...",
+            "dosage": "...",
+            "duration": "..."
+        }
+    ]
+    """
+
+    medicines = []
+
+    # ---------------------------------------------------------
+    # 1. Use Veryfi structured medicine if available
+    # ---------------------------------------------------------
+    if structured_medicine:
+     if isinstance(structured_medicine, dict):
+        structured_medicine = structured_medicine.get("value")
+
+    if isinstance(structured_medicine, str):
+
+        # Veryfi can sometimes return multiple medicines
+        # together in one field, e.g. "Dibact DS; Emset"
+        medicine_names = re.split(
+            r"\s*[;,]\s*|\s+\band\b\s+",
+            structured_medicine,
+            flags=re.IGNORECASE,
+        )
+
+        for medicine_name in medicine_names:
+            medicine_name = medicine_name.strip()
+
+            if not medicine_name:
+                continue
+
+            medicines.append({
+                "name": medicine_name,
+                "strength": "",
+                "frequency": "",
+                "dosage": "",
+                "duration": "",
+            })
+
+    # ---------------------------------------------------------
+    # 2. Process OCR text line by line
+    # ---------------------------------------------------------
+    lines = [
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip()
+    ]
+
+    medicine_prefixes = (
+        "tab.",
+        "tab ",
+        "tablet",
+        "cap.",
+        "cap ",
+        "capsule",
+        "syp.",
+        "syp ",
+        "syrup",
+        "inj.",
+        "inj ",
+        "injection",
+        "drops",
+        "drop.",
+    )
+
+    for line in lines:
+        lower = line.lower()
+
+        if not lower.startswith(medicine_prefixes):
+            continue
+
+        # Remove common prescription prefixes
+        cleaned = re.sub(
+            r"^(tab\.?|tablet|cap\.?|capsule|syp\.?|syrup|inj\.?|injection|drop\.?|drops)\s*",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        if not cleaned:
+            continue
+
+        # -----------------------------------------------------
+        # Extract strength
+        # Examples:
+        # 500 mg
+        # 625 mg
+        # 40mg
+        # 10 ml
+        # -----------------------------------------------------
+        strength_match = re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml|%|iu)\b",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+        strength = strength_match.group(0) if strength_match else ""
+
+        # Remove strength from medicine name
+        name = cleaned
+
+        if strength:
+            name = re.sub(
+                re.escape(strength),
+                "",
+                name,
+                flags=re.IGNORECASE,
+            )
+
+        # Remove bracketed numeric values such as (625)
+        name = re.sub(r"\(\s*\d+\s*\)", "", name)
+
+        # Remove obvious dosage/frequency information
+        name = re.sub(
+            r"\b(?:od|bd|tds|qid|hs|sos|stat|once|twice|thrice)\b",
+            "",
+            name,
+            flags=re.IGNORECASE,
+        )
+
+        name = re.sub(
+            r"\s+",
+            " ",
+            name
+        ).strip(" -,:;.")
+
+        if len(name) < 2:
+            continue
+
+        # -----------------------------------------------------
+        # Frequency
+        # -----------------------------------------------------
+        frequency = ""
+
+        frequency_patterns = [
+            (r"\b(?:od|once daily)\b", "Once daily"),
+            (r"\b(?:bd|twice daily)\b", "Twice daily"),
+            (r"\b(?:tds|three times daily)\b", "Three times daily"),
+            (r"\b(?:qid|four times daily)\b", "Four times daily"),
+            (r"\b(?:hs|at bedtime)\b", "At bedtime"),
+            (r"\b(?:sos|as needed)\b", "As needed"),
+        ]
+
+        for pattern, value in frequency_patterns:
+            if re.search(pattern, cleaned, re.IGNORECASE):
+                frequency = value
+                break
+
+        # -----------------------------------------------------
+        # Dosage
+        # -----------------------------------------------------
+        dosage = ""
+
+        dosage_match = re.search(
+            r"\b\d+\s*(?:tablet|tablets|tab|capsule|capsules|cap|drop|drops|ml)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+
+        if dosage_match:
+            dosage = dosage_match.group(0)
+
+        # -----------------------------------------------------
+        # Duration
+        # -----------------------------------------------------
+        duration = ""
+
+        duration_match = re.search(
+            r"\b\d+\s*(?:day|days|week|weeks|month|months)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+
+        if duration_match:
+            duration = duration_match.group(0)
+
+        medicines.append({
+            "name": name,
+            "strength": strength,
+            "frequency": frequency,
+            "dosage": dosage,
+            "duration": duration,
+        })
+
+    # ---------------------------------------------------------
+    # Remove duplicates
+    # ---------------------------------------------------------
+    unique = {}
+
+    for medicine in medicines:
+        key = medicine["name"].lower().strip()
+
+        if key not in unique:
+            unique[key] = medicine
+
+    return list(unique.values())
+@api_router.post("/prescriptions/{prescription_id}/analyze")
+async def analyze_prescription(
+    prescription_id: str,
+    user: dict = Depends(current_user)
+) -> dict:
+
+    # 1. Find the prescription belonging to the logged-in user
+    prescription = await db.prescriptions.find_one({
+        "id": prescription_id,
+        "user_id": user["id"],
+    })
+
+    if not prescription:
+        raise HTTPException(
+            status_code=404,
+            detail="Prescription not found"
+        )
+
+    # 2. Get the original image from MongoDB
+    try:
+        image_bytes = base64.b64decode(
+            prescription["data"]
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Stored prescription image is invalid"
+        )
+
+    # 3. Get Veryfi credentials
+    veryfi_client_id = os.getenv("VERYFI_CLIENT_ID")
+    veryfi_username = os.getenv("VERYFI_USERNAME")
+    veryfi_api_key = os.getenv("VERYFI_API_KEY")
+
+    if not all([
+        veryfi_client_id,
+        veryfi_username,
+        veryfi_api_key,
+    ]):
+        raise HTTPException(
+            status_code=500,
+            detail="Veryfi credentials are not configured"
+        )
+
+    # 4. Veryfi authentication
+    headers = {
+        "CLIENT-ID": veryfi_client_id,
+        "Authorization": (
+            f"apikey {veryfi_username}:{veryfi_api_key}"
+        ),
+        "Accept": "application/json",
+    }
+
+    # 5. Send prescription to Veryfi AnyDocs
+    files = {
+        "file": (
+            prescription.get(
+                "filename",
+                "prescription.jpg"
+            ),
+            image_bytes,
+            prescription.get(
+                "content_type",
+                "image/jpeg"
+            ),
+        )
+    }
+
+    data = {
+        "blueprint_name": "prescription_medication_label"
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=60.0
+        ) as client:
+
+            response = await client.post(
+                "https://api.veryfi.com/api/v8/partner/any-documents",
+                headers=headers,
+                files=files,
+                data=data,
+            )
+
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Veryfi request failed: {str(exc)}"
+        )
+
+    # 6. Handle Veryfi error
+    if not response.is_success:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Veryfi error: {response.text}"
+        )
+
+    veryfi_result = response.json()
+
+    # Debugging - useful while testing
+    print("VERYFI RESULT:")
+    print(veryfi_result)
+
+    # 7. Extract OCR text
+    ocr_text = veryfi_result.get("text", "") or ""
+
+    # 8. Extract structured medicine name
+    structured_medicine = veryfi_result.get(
+        "medicine_name"
+    )
+
+    if isinstance(structured_medicine, dict):
+        structured_medicine = structured_medicine.get(
+            "value"
+        )
+
+    # 9. Extract medicines from OCR + Veryfi medicine field
+    medicines = extract_medicines(
+        ocr_text,
+        structured_medicine,
+    )
+
+    # 10. Save analysis
+    await db.prescriptions.update_one(
+        {
+            "id": prescription_id,
+            "user_id": user["id"],
+        },
+        {
+            "$set": {
+                "veryfi_analysis": veryfi_result,
+                "ocr_text": ocr_text,
+                "medicines": medicines,
+                "analysis_status": "completed",
+            }
+        }
+    )
+
+    # 11. Return medicines to frontend
+    return {
+        "prescription_id": prescription_id,
+        "ocr_text": ocr_text,
+        "medicines": medicines,
+        "status": "completed",
+    }
 
 @api_router.post("/addresses")
 async def add_address(payload: AddressInput, user: dict = Depends(current_user)) -> dict:

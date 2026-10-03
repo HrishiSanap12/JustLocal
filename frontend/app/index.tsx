@@ -91,7 +91,7 @@ const useStyles = makeStyles((colors) => ({
   navActive: { color: colors.brandPrimary },
 
   // ------------ AUTH SCREEN ------------
-  
+
   authRoot: { flex: 1, backgroundColor: colors.surface },
   authHero: { paddingTop: 36, paddingBottom: 26, paddingHorizontal: 24, alignItems: "center" },
   authTagPill: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: colors.surface, borderRadius: 999, marginTop: 16, borderWidth: 1, borderColor: colors.brandTertiary },
@@ -296,7 +296,7 @@ function AuthScreen({ onAuth, prefillSession }: { onAuth: (token: string, user: 
     }
   };
 
-  
+
 
   return (
     <KeyboardAvoidingView style={styles.authRoot} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -1032,40 +1032,329 @@ function UploadModal({ token, onClose, onUploaded }: { token: string; onClose: (
   const { colors } = useTheme();
   const [uri, setUri] = useState("");
   const [name, setName] = useState("");
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
   const [shareConsent, setShareConsent] = useState(false);
+  const [selectedMedicines, setSelectedMedicines] = useState<number[]>([]);
   const pick = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.75 });
     if (!result.canceled) { setUri(result.assets[0].uri); setName(result.assets[0].fileName ?? "prescription.jpg"); }
   };
   const upload = async () => {
     if (!uri) return;
+
     try {
-      const prescription = await api.uploadPrescription(token, uri, name);
-      onUploaded(prescription.id, shareConsent);
+      setAnalyzing(true);
+
+      const prescription = await api.uploadPrescription(
+        token,
+        uri,
+        name
+      );
+
+      const result = await api.analyzePrescription(
+        token,
+        prescription.id
+      );
+
+      console.log(
+        "Prescription analysis result:",
+        result
+      );
+
+      setAnalysisResult(result);
+
+      const medicines = Array.isArray(result?.medicines)
+        ? result.medicines
+        : [];
+
+      // Select all detected medicines by default
+      setSelectedMedicines(
+        medicines.map((_: any, index: number) => index)
+      );
+
+      setShowAnalysis(true);
+
     } catch (err) {
-      Alert.alert("Upload failed", err instanceof Error ? err.message : "Please try again.");
+      Alert.alert(
+        "Analysis failed",
+        err instanceof Error
+          ? err.message
+          : "Unable to analyze prescription."
+      );
+    } finally {
+      setAnalyzing(false);
     }
+  };
+  const confirmPrescription = () => {
+    if (!analysisResult?.prescription_id) {
+      Alert.alert(
+        "Prescription error",
+        "Prescription ID is missing."
+      );
+      return;
+    }
+
+    const confirmedMedicines =
+      (analysisResult?.medicines || []).filter(
+        (_: any, index: number) =>
+          selectedMedicines.includes(index)
+      );
+
+    if (confirmedMedicines.length === 0) {
+      Alert.alert(
+        "Select medicine",
+        "Please select at least one medicine."
+      );
+      return;
+    }
+
+    console.log(
+      "Confirmed medicines:",
+      confirmedMedicines
+    );
+
+    console.log(
+      "Prescription ID:",
+      analysisResult.prescription_id
+    );
+
+    // Continue through the existing prescription workflow
+    onUploaded(
+      analysisResult.prescription_id,
+      shareConsent
+    );
   };
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(11,37,69,0.24)" }}>
         <View style={[styles.modal, { minHeight: "52%", borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingTop: 18 }]}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Upload prescription</Text>
-            <Press onPress={onClose} style={styles.iconButton}><Icon name="close" /></Press>
-          </View>
-          <Text style={styles.body}>Upload a clear image. With your consent, it will be shared with verified pharmacies assigned to your request. A pharmacist reviews it manually.</Text>
-          <Press style={[styles.rxCard, { marginTop: 20, justifyContent: "center" }]} onPress={pick}>
-            <Icon name="image-outline" color={colors.brandPrimary} size={24} />
-            <Text style={[styles.body, { marginLeft: 10 }]}>{name || "Choose an image from your phone"}</Text>
-          </Press>
-          <Press onPress={() => setShareConsent((current) => !current)} style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 18, paddingVertical: 8 }}>
-            <View style={[styles.radio, shareConsent && styles.radioActive]}>{shareConsent && <View style={styles.radioDot} />}</View>
-            <Text style={[styles.body, { flex: 1 }]}>I agree to share this prescription with verified pharmacies for this request only.</Text>
-          </Press>
-          <Press style={[styles.primaryButton, { marginTop: 16 }]} onPress={upload} disabled={!uri || !shareConsent}>
-            <Text style={styles.buttonText}>Upload and continue</Text>
-          </Press>
+
+          {!showAnalysis ? (
+            <>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>
+                  {analyzing
+                    ? "Analyzing prescription..."
+                    : "Upload prescription"}
+                </Text>
+
+                <Press
+                  onPress={onClose}
+                  style={styles.iconButton}
+                >
+                  <Icon name="close" />
+                </Press>
+              </View>
+
+              <Text style={styles.body}>
+                Upload a clear prescription image. The system will
+                extract the medicines for pharmacist review.
+              </Text>
+
+              <Press
+                style={[
+                  styles.rxCard,
+                  {
+                    marginTop: 20,
+                    justifyContent: "center",
+                  },
+                ]}
+                onPress={pick}
+                disabled={analyzing}
+              >
+                <Icon
+                  name="image-outline"
+                  color={colors.brandPrimary}
+                  size={24}
+                />
+
+                <Text
+                  style={[
+                    styles.body,
+                    { marginLeft: 10, flex: 1 },
+                  ]}
+                  numberOfLines={2}
+                >
+                  {name || "Choose an image from your phone"}
+                </Text>
+              </Press>
+
+              <Press
+                style={[
+                  styles.primaryButton,
+                  { marginTop: 24 },
+                ]}
+                onPress={upload}
+                disabled={!uri || analyzing}
+              >
+                {analyzing ? (
+                  <ActivityIndicator
+                    color={colors.onBrandPrimary}
+                  />
+                ) : (
+                  <Text style={styles.buttonText}>
+                    Analyze prescription
+                  </Text>
+                )}
+              </Press>
+            </>
+          ) : (
+            <>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>
+                  Prescription Analysis
+                </Text>
+
+                <Press
+                  onPress={onClose}
+                  style={styles.iconButton}
+                >
+                  <Icon name="close" />
+                </Press>
+              </View>
+
+              <Text
+                style={[
+                  styles.body,
+                  { marginBottom: 18 },
+                ]}
+              >
+                Review the medicines detected from your prescription.
+              </Text>
+
+              <Text
+                style={[
+                  styles.sectionTitle,
+                  { marginBottom: 12 },
+                ]}
+              >
+                Extracted Medicines
+              </Text>
+
+              {Array.isArray(analysisResult?.medicines) &&
+                analysisResult.medicines.length > 0 ? (
+
+                analysisResult.medicines.map(
+                  (medicine: any, index: number) => {
+
+                    const selected =
+                      selectedMedicines.includes(index);
+
+                    return (
+                      <Press
+                        key={`${medicine.name || "medicine"}-${index}`}
+                        onPress={() => {
+                          setSelectedMedicines((current) =>
+                            current.includes(index)
+                              ? current.filter(
+                                (item) => item !== index
+                              )
+                              : [...current, index]
+                          );
+                        }}
+                        style={[
+                          styles.addressCard,
+                          {
+                            marginBottom: 10,
+                            flexDirection: "row",
+                            alignItems: "center",
+
+                            borderWidth: 1,
+
+                            borderColor: selected
+                              ? colors.brandPrimary
+                              : colors.border,
+
+                            backgroundColor: selected
+                              ? colors.brandTertiary
+                              : colors.surface,
+                          },
+                        ]}
+                      >
+
+                        {/* CHECKBOX */}
+                        <View
+                          style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: 7,
+                            borderWidth: 2,
+
+                            borderColor: selected
+                              ? colors.brandPrimary
+                              : colors.muted,
+
+                            backgroundColor: selected
+                              ? colors.brandPrimary
+                              : "transparent",
+
+                            alignItems: "center",
+                            justifyContent: "center",
+
+                            marginRight: 12,
+                          }}
+                        >
+                          {selected && (
+                            <Icon
+                              name="checkmark"
+                              color={colors.onBrandPrimary}
+                              size={17}
+                            />
+                          )}
+                        </View>
+
+                        {/* MEDICINE NAME */}
+                        <View style={{ flex: 1 }}>
+
+                          <Text style={styles.productName}>
+                            {medicine.name ||
+                              "Medicine name not identified"}
+                          </Text>
+
+                        </View>
+
+                      </Press>
+                    );
+                  }
+                )
+
+              ) : (
+
+                <View
+                  style={[
+                    styles.addressCard,
+                    { marginBottom: 15 },
+                  ]}
+                >
+                  <Text style={styles.body}>
+                    No medicines could be confidently extracted.
+                    Please verify the prescription image.
+                  </Text>
+                </View>
+
+              )}
+
+              <Press
+                style={[
+                  styles.primaryButton,
+                  { marginTop: 18 },
+                ]}
+                onPress={confirmPrescription}
+              >
+                <Text style={styles.buttonText}>
+                  Confirm Prescription
+                </Text>
+
+                <Icon
+                  name="arrow-forward"
+                  color={colors.onBrandPrimary}
+                  size={18}
+                />
+              </Press>
+            </>
+          )}
         </View>
       </View>
     </Modal>
