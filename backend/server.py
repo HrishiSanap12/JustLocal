@@ -777,25 +777,19 @@ async def analyze_prescription(
 
     # 3. Get Veryfi credentials
     veryfi_client_id = os.getenv("VERYFI_CLIENT_ID")
-    veryfi_username = os.getenv("VERYFI_USERNAME")
     veryfi_api_key = os.getenv("VERYFI_API_KEY")
 
-    if not all([
-        veryfi_client_id,
-        veryfi_username,
-        veryfi_api_key,
-    ]):
+    if not all([veryfi_client_id, veryfi_api_key]):
         raise HTTPException(
             status_code=500,
-            detail="Veryfi credentials are not configured"
+            detail="Veryfi client credentials are not configured"
         )
 
-    # 4. Veryfi authentication
+    # AnyDocs uses a client-scoped API key as a Bearer token. VERYFI_USERNAME
+    # is no longer part of the authentication format for this endpoint.
     headers = {
         "CLIENT-ID": veryfi_client_id,
-        "Authorization": (
-            f"apikey {veryfi_username}:{veryfi_api_key}"
-        ),
+        "Authorization": f"Bearer {veryfi_api_key}",
         "Accept": "application/json",
     }
 
@@ -838,24 +832,37 @@ async def analyze_prescription(
 
     # 6. Handle Veryfi error
     if not response.is_success:
+        if response.status_code in (401, 403):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Veryfi rejected the credentials. Set VERYFI_CLIENT_ID and "
+                    "a client-scoped Veryfi API key in backend/.env, then restart the backend."
+                ),
+            )
         raise HTTPException(
             status_code=502,
-            detail=f"Veryfi error: {response.text}"
+            detail=f"Veryfi error ({response.status_code}): {response.text[:1000]}"
         )
 
-    veryfi_result = response.json()
-
-    # Debugging - useful while testing
-    print("VERYFI RESULT:")
-    print(veryfi_result)
+    try:
+        veryfi_result = response.json()
+    except ValueError:
+        raise HTTPException(
+            status_code=502,
+            detail="Veryfi returned an unreadable analysis response",
+        )
 
     # 7. Extract OCR text
     ocr_text = veryfi_result.get("text", "") or ""
 
     # 8. Extract structured medicine name
-    structured_medicine = veryfi_result.get(
-        "medicine_name"
-    )
+    structured_medicine = veryfi_result.get("medicine_name")
+    if structured_medicine is None:
+        for result_section in (veryfi_result.get("data"), veryfi_result.get("fields")):
+            if isinstance(result_section, dict) and result_section.get("medicine_name") is not None:
+                structured_medicine = result_section["medicine_name"]
+                break
 
     if isinstance(structured_medicine, dict):
         structured_medicine = structured_medicine.get(
