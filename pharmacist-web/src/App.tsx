@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownLeft,
   ArrowRight,
@@ -34,7 +34,9 @@ type RequestStatus = "new" | "reviewing" | "offer sent" | "declined";
 type PrescriptionDecision = "matches" | "clarification" | "not-approved" | null;
 
 type RequestedMedicine = {
-  id: string;
+  key: string;
+  id: string | null;
+  custom: boolean;
   name: string;
   strength: string;
   form: string;
@@ -64,6 +66,8 @@ type CatalogMedicine = {
   strength: string;
   form: string;
   manufacturer: string;
+  composition: string;
+  image: string | null;
   price: number;
   carried: boolean;
 };
@@ -116,11 +120,13 @@ function mapRequest(request: PharmacyRequest, catalog: PharmacyProduct[]): Medic
     prescriptionDecision: request.prescription_review?.decision ?? null,
     status: assignmentState[request.assignment_status] ?? "new",
     prescriptionOnly: Boolean(request.prescription_id) && request.items.length === 0,
-    medicines: request.items.map((item) => {
-      const product = carried.get(item.medicine_id);
+    medicines: request.items.map((item, index) => {
+      const product = item.medicine_id ? carried.get(item.medicine_id) : undefined;
       const match = item.name.match(/\b(\d+(?:\.\d+)?\s?(?:mg|mcg|ml|iu|g|%))\b/i);
       return {
+        key: item.medicine_id ?? `custom-${index}-${item.name.toLowerCase()}`,
         id: item.medicine_id,
+        custom: !item.medicine_id,
         name: item.name,
         strength: match?.[1] ?? "",
         form: item.pack || "Pack",
@@ -138,9 +144,11 @@ function mapProduct(product: PharmacyProduct): CatalogMedicine {
     id: product.id,
     name: product.name,
     strength: match?.[1] ?? "",
-    form: product.pack || "Pack",
+    form: product.form || product.pack || "Pack",
     manufacturer: product.manufacturer,
-    price: product.pharmacy_price ?? product.price,
+    composition: product.composition ?? "",
+    image: product.image_url ?? null,
+    price: product.pharmacy_price ?? product.price ?? 0,
     carried: product.carried,
   };
 }
@@ -173,6 +181,9 @@ function App() {
   const [orders, setOrders] = useState<WorkspaceOrder[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [query, setQuery] = useState("");
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const catalogQueryRef = useRef("");
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, number>>({});
   const [filter, setFilter] = useState("All requests");
   const [isAvailable, setIsAvailable] = useState(true);
   const [savingAvailability, setSavingAvailability] = useState(false);
@@ -184,7 +195,18 @@ function App() {
   const [pharmacist, setPharmacist] = useState<{ name: string; email: string; pharmacy_id: string; pharmacy_name: string; area: string } | null>(null);
   const [authOpen, setAuthOpen] = useState(() => !readPharmacyToken());
   const [prescriptionData, setPrescriptionData] = useState<{ content_type: string; data_base64: string } | null>(null);
-  const selectedRequest = requests.find((request) => request.id === selectedId) ?? null;
+  // Offer lines the pharmacist adds or prices locally; kept separate so the 10s refresh doesn't wipe them.
+  const [drafts, setDrafts] = useState<Record<string, RequestedMedicine[]>>({});
+  const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
+  const baseRequest = requests.find((request) => request.id === selectedId) ?? null;
+  const selectedRequest = useMemo(() => {
+    if (!baseRequest) return null;
+    const added = drafts[baseRequest.id] ?? [];
+    const medicines = [...baseRequest.medicines, ...added].map((medicine) => medicine.custom
+      ? { ...medicine, quotePrice: customPrices[`${baseRequest.id}:${medicine.key}`] ?? medicine.quotePrice }
+      : medicine);
+    return { ...baseRequest, medicines };
+  }, [baseRequest, drafts, customPrices]);
   const filteredRequests = useMemo(() => {
     const term = query.trim().toLowerCase();
     return requests.filter((request) => {
@@ -200,14 +222,15 @@ function App() {
   }
 
   async function refreshLiveData(token: string) {
-    const [profile, apiRequests, apiCatalog, apiOrders] = await Promise.all([
+    const [profile, apiRequests, apiCatalog, apiCarried, apiOrders] = await Promise.all([
       pharmacistApi.me(token),
       pharmacistApi.requests(token),
-      pharmacistApi.catalog(token),
+      pharmacistApi.catalog(token, catalogQueryRef.current),
+      pharmacistApi.carryList(token),
       pharmacistApi.orders(token),
     ]);
     const nextCatalog = apiCatalog.map(mapProduct);
-    const nextRequests = apiRequests.map((request) => mapRequest(request, apiCatalog));
+    const nextRequests = apiRequests.map((request) => mapRequest(request, apiCarried));
     setPharmacist({ name: profile.name, email: profile.email, pharmacy_id: profile.pharmacy_id, pharmacy_name: profile.pharmacy_name, area: profile.area });
     setRequests(nextRequests);
     setCatalog(nextCatalog);
@@ -245,6 +268,23 @@ function App() {
     return () => { active = false; window.clearInterval(interval); };
   }, [liveToken]);
 
+  useEffect(() => {
+    catalogQueryRef.current = catalogQuery;
+    if (!liveToken) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      pharmacistApi.catalog(liveToken, catalogQuery)
+        .then((products) => { if (active) setCatalog(products.map(mapProduct)); })
+        .catch(() => undefined);
+    }, 300);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [catalogQuery, liveToken]);
+
+  const searchCatalog = useCallback(async (term: string) => {
+    if (!liveToken) return [];
+    return (await pharmacistApi.catalog(liveToken, term)).map(mapProduct);
+  }, [liveToken]);
+
   async function signIn(email: string, password: string) {
     const result = await pharmacistApi.login(email, password);
     window.localStorage.setItem(PHARMACY_TOKEN_KEY, result.token);
@@ -263,8 +303,7 @@ function App() {
   }
 
   async function registerPharmacy(details: PharmacyRegistration) {
-    const result = await pharmacistApi.register(details);
-    return result.message;
+    return pharmacistApi.register(details);
   }
 
   async function signOut() {
@@ -314,12 +353,18 @@ function App() {
     if (!liveToken) { setAuthOpen(true); return; }
     const medicine = catalog.find((item) => item.id === medicineId);
     if (!medicine) return;
+    const price = priceDrafts[medicineId] ?? medicine.price;
+    if (!medicine.carried && !(price > 0)) {
+      notify("Enter your price for this medicine first.");
+      return;
+    }
     setUpdatingCarryId(medicineId);
     try {
       if (medicine.carried) {
         await pharmacistApi.updateCarry(liveToken, medicineId, { carried: false });
       } else {
-        await pharmacistApi.saveCarry(liveToken, medicineId, medicine.price);
+        await pharmacistApi.saveCarry(liveToken, medicineId, price);
+        setPriceDrafts((current) => { const next = { ...current }; delete next[medicineId]; return next; });
       }
       await refreshLiveData(liveToken);
       notify(medicine.carried ? "Medicine removed from your carry list." : "Medicine added to your carry list.");
@@ -332,8 +377,12 @@ function App() {
 
   async function persistPrice(medicineId: string, price: number) {
     if (!liveToken) { setAuthOpen(true); return; }
+    // Not carried yet: keep the typed price until the pharmacist switches it on.
+    if (!catalog.find((item) => item.id === medicineId)?.carried) return;
+    if (!(price > 0)) { notify("Enter a price above ₹0."); return; }
     try {
       await pharmacistApi.updateCarry(liveToken, medicineId, { price });
+      setPriceDrafts((current) => { const next = { ...current }; delete next[medicineId]; return next; });
       await refreshLiveData(liveToken);
       notify("Pharmacy price saved.");
     } catch (error) {
@@ -368,16 +417,24 @@ function App() {
       return;
     }
     if (selectedRequest.medicines.length === 0) {
-      notify("Add the prescribed medicine from your carry list before sending an offer.");
+      notify("Add the prescribed medicine before sending an offer.");
+      return;
+    }
+    const unpriced = selectedRequest.medicines.find((medicine) => medicine.custom && !(medicine.quotePrice > 0));
+    if (unpriced) {
+      notify(`Enter your price for ${unpriced.name}.`);
       return;
     }
     try {
       await pharmacistApi.respond(liveToken, selectedRequest.id, {
         availability: "available",
         prescription_decision: selectedRequest.prescription ? selectedRequest.prescriptionDecision ?? undefined : undefined,
-        items: selectedRequest.medicines.map((medicine) => ({ medicine_id: medicine.id, quantity: medicine.quantity })),
+        items: selectedRequest.medicines.map((medicine) => medicine.id
+          ? { medicine_id: medicine.id, quantity: medicine.quantity }
+          : { requested_name: medicine.name, unit_price: medicine.quotePrice, quantity: medicine.quantity }),
         eta_minutes: 30,
       });
+      setDrafts((current) => { const next = { ...current }; delete next[selectedRequest.id]; return next; });
       await refreshLiveData(liveToken);
       notify(`Offer sent for ${selectedRequest.id}.`);
     } catch (error) {
@@ -404,20 +461,37 @@ function App() {
   function updatePrice(medicineId: string, value: string) {
     const price = Number(value);
     if (!Number.isFinite(price) || price < 0) return;
-    setCatalog((current) => current.map((medicine) => medicine.id === medicineId ? { ...medicine, price } : medicine));
+    setPriceDrafts((current) => ({ ...current, [medicineId]: price }));
   }
 
   function addOfferMedicine(requestId: string, medicineId: string, quantity: number) {
     const medicine = catalog.find((item) => item.id === medicineId && item.carried);
     if (!medicine || quantity < 1) return;
-    setRequests((current) => current.map((request) => {
-      if (request.id !== requestId || request.medicines.some((item) => item.id === medicineId)) return request;
-      return {
-        ...request,
-        prescriptionOnly: false,
-        medicines: [...request.medicines, { id: medicine.id, name: medicine.name, strength: medicine.strength, form: medicine.form, quantity, unit: "pack", quotePrice: medicine.price }],
-      };
-    }));
+    setDrafts((current) => {
+      const lines = current[requestId] ?? [];
+      if (lines.some((item) => item.id === medicineId)) return current;
+      return { ...current, [requestId]: [...lines, { key: medicine.id, id: medicine.id, custom: false, name: medicine.name, strength: medicine.strength, form: medicine.form, quantity, unit: "pack", quotePrice: medicine.price }] };
+    });
+  }
+
+  function addCustomOfferMedicine(requestId: string, name: string, quantity: number, price: number) {
+    const trimmed = name.trim();
+    if (trimmed.length < 2 || quantity < 1 || !(price > 0)) return;
+    setDrafts((current) => {
+      const lines = current[requestId] ?? [];
+      if (lines.some((item) => item.name.toLowerCase() === trimmed.toLowerCase())) return current;
+      return { ...current, [requestId]: [...lines, { key: `custom-${trimmed.toLowerCase()}`, id: null, custom: true, name: trimmed, strength: "", form: "Pharmacist confirmed", quantity, unit: "pack", quotePrice: price }] };
+    });
+  }
+
+  function removeDraftMedicine(requestId: string, key: string) {
+    setDrafts((current) => ({ ...current, [requestId]: (current[requestId] ?? []).filter((item) => item.key !== key) }));
+  }
+
+  function setCustomPrice(requestId: string, key: string, value: string) {
+    const price = Number(value);
+    if (!Number.isFinite(price) || price < 0) return;
+    setCustomPrices((current) => ({ ...current, [`${requestId}:${key}`]: price }));
   }
 
   async function advanceOrder(order: WorkspaceOrder) {
@@ -519,18 +593,22 @@ function App() {
             onSelect={setSelectedId}
             onReview={() => void openPrescriptionReview()}
             onSendOffer={sendOffer}
+            onAddCustomMedicine={addCustomOfferMedicine}
+            onRemoveDraft={removeDraftMedicine}
+            onCustomPrice={setCustomPrice}
+            draftKeys={selectedRequest ? (drafts[selectedRequest.id] ?? []).map((item) => item.key) : []}
             onDecline={declineRequest}
             onNotify={notify}
             catalog={catalog}
             onAddOfferMedicine={addOfferMedicine}
           />}
-              {page === "catalog" && <CatalogPage catalog={catalog} query={query} onQuery={setQuery} onToggle={toggleCarried} updatingMedicineId={updatingCarryId} onPrice={updatePrice} onCommitPrice={persistPrice} onNotify={notify} />}
+              {page === "catalog" && <CatalogPage catalog={catalog.map((medicine) => priceDrafts[medicine.id] !== undefined ? { ...medicine, price: priceDrafts[medicine.id] } : medicine)} query={catalogQuery} onQuery={setCatalogQuery} onToggle={toggleCarried} updatingMedicineId={updatingCarryId} onPrice={updatePrice} onCommitPrice={persistPrice} onNotify={notify} />}
               {page === "orders" && <OrdersPage orders={orders} onAdvance={advanceOrder} />}
         </div>
       </main>
 
       {selectedRequest && isPrescriptionOpen && <PrescriptionDialog request={selectedRequest} prescriptionData={prescriptionData} onClose={() => setPrescriptionOpen(false)} onDecision={savePrescriptionDecision} />}
-      {isAddMedicineOpen && <AddMedicineDialog catalog={catalog} onClose={() => setAddMedicineOpen(false)} onAdd={addMedicineToCarry} />}
+      {isAddMedicineOpen && <AddMedicineDialog catalog={catalog} onClose={() => setAddMedicineOpen(false)} onAdd={addMedicineToCarry} onSearch={searchCatalog} />}
       {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onLogin={signIn} onRegister={registerPharmacy} />}
       {toast && <div role="status" className="toast"><CheckCircle2 size={17} />{toast}</div>}
     </div>
@@ -557,6 +635,10 @@ function RequestsPage({
   onNotify,
   catalog,
   onAddOfferMedicine,
+  onAddCustomMedicine,
+  onRemoveDraft,
+  onCustomPrice,
+  draftKeys,
 }: {
   requests: MedicineRequest[];
   selectedRequest: MedicineRequest | null;
@@ -573,6 +655,10 @@ function RequestsPage({
   onNotify: (message: string) => void;
   catalog: CatalogMedicine[];
   onAddOfferMedicine: (requestId: string, medicineId: string, quantity: number) => void;
+  onAddCustomMedicine: (requestId: string, name: string, quantity: number, price: number) => void;
+  onRemoveDraft: (requestId: string, key: string) => void;
+  onCustomPrice: (requestId: string, key: string, value: string) => void;
+  draftKeys: string[];
 }) {
   const needingResponse = requests.filter((request) => ["new", "reviewing"].includes(request.status)).length;
   const rxCount = requests.filter((request) => request.prescription && request.prescriptionDecision === null).length;
@@ -598,7 +684,7 @@ function RequestsPage({
               </button>
             ))}
           </div>
-          <div className="queue-footer"><ShieldCheck size={15} /><span>Requests are shared with every verified pharmacy accepting requests</span></div>
+          <div className="queue-footer"><ShieldCheck size={15} /><span>Each request goes to up to 5 nearest verified pharmacies whose medicine list matches</span></div>
         </div>
 
         <div className="detail-panel">
@@ -606,19 +692,24 @@ function RequestsPage({
             <div className="detail-header"><div><div className="detail-ref">REQUEST <span>{selectedRequest.id}</span><span className={`status-tag status-${selectedRequest.status.replace(" ", "-")}`}>{selectedRequest.status}</span></div><h2>{selectedRequest.patient}</h2><div className="detail-location"><MapPin size={14} />{selectedRequest.area}<span>·</span>{selectedRequest.distance}</div></div><button className="icon-button quiet" aria-label="More request actions" onClick={() => onNotify("No additional actions are available for this request.")}><Menu size={18} /></button></div>
             <div className="request-timing"><Clock3 size={15} /><span>{selectedRequest.deadline}</span><span className="timing-separator" /><span>Received {selectedRequest.received}</span></div>
 
-            {selectedRequest.prescriptionOnly && <PrescriptionProductPicker catalog={catalog} requestId={selectedRequest.id} onAdd={onAddOfferMedicine} />}
+            {selectedRequest.prescriptionOnly && (selectedRequest.prescriptionDecision === "matches"
+              ? <PrescriptionProductPicker catalog={catalog} requestId={selectedRequest.id} onAdd={onAddOfferMedicine} onAddCustom={onAddCustomMedicine} />
+              : <div className="prescription-product-picker"><span className="section-label-text">BUILD OFFER FROM PRESCRIPTION</span><p>Review the prescription and record “matches” before adding medicines.</p></div>)}
 
             <div className="detail-section">
               <div className="section-label"><span>MEDICINES REQUESTED</span><span>{selectedRequest.medicines.length} items</span></div>
               <div className="requested-list">
                 {selectedRequest.medicines.map((medicine) => (
-                  <div className="requested-item" key={medicine.id}>
+                  <div className="requested-item" key={medicine.key}>
                     <span className="medicine-symbol"><HeartPulse size={17} /></span>
                     <span className="requested-name">
                       <strong>{medicine.name} <span>{medicine.strength}</span></strong>
                       <small>{medicine.form} · customer needs {medicine.quantity} {medicine.unit}{medicine.quantity > 1 ? "s" : ""}</small>
                     </span>
-                    <span className="requested-quote">₹{medicine.quotePrice}<small>your offer / pack</small></span>
+                    {medicine.custom
+                      ? <span className="requested-quote"><input aria-label={`Price for ${medicine.name}`} type="number" min="1" step="0.5" style={{ width: 80 }} value={medicine.quotePrice || ""} placeholder="₹ price" onChange={(event) => onCustomPrice(selectedRequest.id, medicine.key, event.target.value)} /><small>your price / pack</small></span>
+                      : <span className="requested-quote">₹{medicine.quotePrice}<small>your offer / pack</small></span>}
+                    {draftKeys.includes(medicine.key) && <button className="icon-button quiet" aria-label={`Remove ${medicine.name}`} onClick={() => onRemoveDraft(selectedRequest.id, medicine.key)}><X size={14} /></button>}
                   </div>
                 ))}
               </div>
@@ -649,10 +740,13 @@ function RequestsPage({
   );
 }
 
-function PrescriptionProductPicker({ catalog, requestId, onAdd }: { catalog: CatalogMedicine[]; requestId: string; onAdd: (requestId: string, medicineId: string, quantity: number) => void }) {
+function PrescriptionProductPicker({ catalog, requestId, onAdd, onAddCustom }: { catalog: CatalogMedicine[]; requestId: string; onAdd: (requestId: string, medicineId: string, quantity: number) => void; onAddCustom: (requestId: string, name: string, quantity: number, price: number) => void }) {
   const carried = catalog.filter((medicine) => medicine.carried);
   const [medicineId, setMedicineId] = useState(carried[0]?.id ?? "");
   const [quantity, setQuantity] = useState(1);
+  const [customName, setCustomName] = useState("");
+  const [customQuantity, setCustomQuantity] = useState(1);
+  const [customPrice, setCustomPrice] = useState("");
   return (
     <div className="prescription-product-picker">
       <span className="section-label-text">BUILD OFFER FROM PRESCRIPTION</span>
@@ -664,19 +758,25 @@ function PrescriptionProductPicker({ catalog, requestId, onAdd }: { catalog: Cat
         <label className="picker-quantity">Packs<input aria-label="Pack quantity" type="number" min="1" max="100" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} /></label>
         <button className="button button-secondary button-small" disabled={!medicineId || quantity < 1 || quantity > 100} onClick={() => onAdd(requestId, medicineId, quantity)}><Plus size={14} />Add to offer</button>
       </div>
+      <p>Not in your list? Enter the medicine exactly as you confirmed it on the prescription.</p>
+      <div className="picker-controls">
+        <input aria-label="Custom medicine name" placeholder="Medicine name and strength" maxLength={160} value={customName} onChange={(event) => setCustomName(event.target.value)} />
+        <label className="picker-quantity">Packs<input aria-label="Custom pack quantity" type="number" min="1" max="100" value={customQuantity} onChange={(event) => setCustomQuantity(Number(event.target.value))} /></label>
+        <label className="picker-quantity">₹/pack<input aria-label="Custom price per pack" type="number" min="1" step="0.5" value={customPrice} onChange={(event) => setCustomPrice(event.target.value)} /></label>
+        <button className="button button-secondary button-small" disabled={customName.trim().length < 2 || customQuantity < 1 || customQuantity > 100 || !(Number(customPrice) > 0)} onClick={() => { onAddCustom(requestId, customName, customQuantity, Number(customPrice)); setCustomName(""); setCustomPrice(""); setCustomQuantity(1); }}><Plus size={14} />Add custom</button>
+      </div>
     </div>
   );
 }
 
 function CatalogPage({ catalog, query, onQuery, onToggle, updatingMedicineId, onPrice, onCommitPrice, onNotify }: { catalog: CatalogMedicine[]; query: string; onQuery: (value: string) => void; onToggle: (id: string) => void; updatingMedicineId: string | null; onPrice: (id: string, value: string) => void; onCommitPrice: (id: string, value: number) => void; onNotify: (message: string) => void }) {
-  const term = query.trim().toLowerCase();
-  const visible = catalog.filter((medicine) => [medicine.name, medicine.strength, medicine.manufacturer, medicine.form].join(" ").toLowerCase().includes(term));
+  const visible = catalog;
   const carriedCount = catalog.filter((medicine) => medicine.carried).length;
 
   return (
     <section className="catalog-panel">
-      <div className="catalog-toolbar"><div className="catalog-summary"><span className="catalog-count">{carriedCount}</span><span>medicines on your carry list</span><span className="summary-divider" /><span>Prices are set by your pharmacy</span></div><label className="search-field catalog-search"><Search size={16} /><input aria-label="Search medicine catalog" placeholder="Search by medicine or brand" value={query} onChange={(event) => onQuery(event.target.value)} /><kbd>/</kbd></label></div>
-      <div className="catalog-table-wrap"><table className="catalog-table"><thead><tr><th>MEDICINE</th><th>MANUFACTURER</th><th>YOUR PRICE</th><th>WE CARRY THIS</th><th aria-label="Actions" /></tr></thead><tbody>{visible.map((medicine) => <tr key={medicine.id} className={!medicine.carried ? "not-carried" : ""}><td><div className="catalog-product"><span className="medicine-symbol small-symbol"><HeartPulse size={15} /></span><span><strong>{medicine.name}</strong><small>{medicine.strength} · {medicine.form}</small></span></div></td><td className="manufacturer-cell">{medicine.manufacturer}</td><td><label className="price-input"><span>₹</span><input aria-label={`${medicine.name} price`} type="number" min="0" step="0.01" value={medicine.price} onChange={(event) => onPrice(medicine.id, event.target.value)} onBlur={(event) => onCommitPrice(medicine.id, Number(event.currentTarget.value))} /></label></td><td><button className={`carry-toggle ${medicine.carried ? "checked" : ""}`} role="switch" aria-checked={medicine.carried} aria-label={`${medicine.carried ? "Remove" : "Add"} ${medicine.name} ${medicine.carried ? "from" : "to"} carry list`} disabled={updatingMedicineId === medicine.id} onClick={() => onToggle(medicine.id)}><span /><strong>{updatingMedicineId === medicine.id ? "Saving…" : medicine.carried ? "Carried" : "Not carried"}</strong></button></td><td><button className="icon-button quiet row-action" aria-label={`Edit ${medicine.name}`} onClick={() => onNotify("Update the price directly in the price field.")}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty-state catalog-empty"><Search size={22} /><strong>No medicines found</strong><span>Try the generic name, brand, or manufacturer.</span></div>}</div>
+      <div className="catalog-toolbar"><div className="catalog-summary"><span className="catalog-count">{carriedCount}</span><span>{query.trim() ? "carried in these results" : "medicines on your carry list"}</span><span className="summary-divider" /><span>Prices are set by your pharmacy</span></div><label className="search-field catalog-search"><Search size={16} /><input aria-label="Search medicine catalog" placeholder="Search 11,000+ medicines by brand or ingredient" value={query} onChange={(event) => onQuery(event.target.value)} /><kbd>/</kbd></label></div>
+      <div className="catalog-table-wrap"><table className="catalog-table"><thead><tr><th>MEDICINE</th><th>COMPOSITION</th><th>YOUR PRICE</th><th>WE CARRY THIS</th><th aria-label="Actions" /></tr></thead><tbody>{visible.map((medicine) => <tr key={medicine.id} className={!medicine.carried ? "not-carried" : ""}><td><div className="catalog-product">{medicine.image ? <img src={medicine.image} alt="" loading="lazy" width={36} height={36} style={{ objectFit: "contain", borderRadius: 8, background: "#fff" }} /> : <span className="medicine-symbol small-symbol"><HeartPulse size={15} /></span>}<span><strong>{medicine.name}</strong><small>{[medicine.strength, medicine.form].filter(Boolean).join(" · ")}</small></span></div></td><td className="manufacturer-cell">{medicine.composition || medicine.manufacturer}</td><td><label className="price-input"><span>₹</span><input aria-label={`${medicine.name} price`} type="number" min="0" step="0.01" value={medicine.price || ""} placeholder="Set price" onChange={(event) => onPrice(medicine.id, event.target.value)} onBlur={(event) => onCommitPrice(medicine.id, Number(event.currentTarget.value))} /></label></td><td><button className={`carry-toggle ${medicine.carried ? "checked" : ""}`} role="switch" aria-checked={medicine.carried} aria-label={`${medicine.carried ? "Remove" : "Add"} ${medicine.name} ${medicine.carried ? "from" : "to"} carry list`} disabled={updatingMedicineId === medicine.id} onClick={() => onToggle(medicine.id)}><span /><strong>{updatingMedicineId === medicine.id ? "Saving…" : medicine.carried ? "Carried" : "Not carried"}</strong></button></td><td><button className="icon-button quiet row-action" aria-label={`Edit ${medicine.name}`} onClick={() => onNotify("Update the price directly in the price field.")}><ChevronRight size={16} /></button></td></tr>)}</tbody></table>{visible.length === 0 && <div className="empty-state catalog-empty"><Search size={22} /><strong>No medicines found</strong><span>Try the brand name or an ingredient, e.g. “paracetamol”.</span></div>}</div>
       <div className="catalog-footnote"><ShieldCheck size={15} /><span>Carry list helps route requests. You confirm actual availability for every request.</span><span className="footnote-end">No stock quantities are collected.</span></div>
     </section>
   );
@@ -714,19 +814,27 @@ function PrescriptionDialog({ request, prescriptionData, onClose, onDecision }: 
   );
 }
 
-function AddMedicineDialog({ catalog, onClose, onAdd }: { catalog: CatalogMedicine[]; onClose: () => void; onAdd: (id: string, price: number) => void }) {
-  const available = catalog.filter((medicine) => !medicine.carried);
-  const [selectedId, setSelectedId] = useState(available[0]?.id ?? "");
-  const selected = available.find((medicine) => medicine.id === selectedId);
-  const [price, setPrice] = useState(selected ? String(selected.price) : "");
+function AddMedicineDialog({ catalog, onClose, onAdd, onSearch }: { catalog: CatalogMedicine[]; onClose: () => void; onAdd: (id: string, price: number) => void; onSearch: (term: string) => Promise<CatalogMedicine[]> }) {
+  const [term, setTerm] = useState("");
+  const [results, setResults] = useState<CatalogMedicine[]>(catalog.filter((medicine) => !medicine.carried));
+  const [selectedId, setSelectedId] = useState(results[0]?.id ?? "");
+  const [price, setPrice] = useState("");
 
-  function choose(id: string) {
-    setSelectedId(id);
-    const medicine = available.find((item) => item.id === id);
-    setPrice(medicine ? String(medicine.price) : "");
-  }
+  useEffect(() => {
+    if (term.trim().length < 2) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      onSearch(term.trim()).then((found) => {
+        if (!active) return;
+        const available = found.filter((medicine) => !medicine.carried);
+        setResults(available);
+        setSelectedId(available[0]?.id ?? "");
+      }).catch(() => undefined);
+    }, 300);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [term, onSearch]);
 
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="dialog add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-title"><div className="dialog-header"><div><span className="section-label-text">PHARMACY CATALOG</span><h2 id="add-title">Add a medicine you carry</h2></div><button className="icon-button quiet" aria-label="Close add medicine dialog" onClick={onClose}><X size={18} /></button></div><p className="dialog-intro">Choose a product from the medicine catalog and set your pharmacy's price.</p><label className="form-label">Medicine<select value={selectedId} onChange={(event) => choose(event.target.value)}>{available.length ? available.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.name} · {medicine.strength} · {medicine.manufacturer}</option>) : <option value="">No unlisted medicines available</option>}</select></label><label className="form-label">Your price<div className="currency-input"><span>₹</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></div></label><div className="no-quantity-note"><CheckCircle2 size={16} /><span>This adds the medicine to your carry list. You won't be asked for a stock count.</span></div><div className="dialog-actions"><button className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={!selectedId || Number(price) <= 0} onClick={() => onAdd(selectedId, Number(price))}><Plus size={16} />Add to carry list</button></div></section></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="dialog add-dialog" role="dialog" aria-modal="true" aria-labelledby="add-title"><div className="dialog-header"><div><span className="section-label-text">PHARMACY CATALOG</span><h2 id="add-title">Add a medicine you carry</h2></div><button className="icon-button quiet" aria-label="Close add medicine dialog" onClick={onClose}><X size={18} /></button></div><p className="dialog-intro">Search the medicine catalog and set your pharmacy's price.</p><label className="form-label">Search<input placeholder="Brand or ingredient" value={term} onChange={(event) => setTerm(event.target.value)} /></label><label className="form-label">Medicine<select value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>{results.length ? results.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.name}{medicine.composition ? ` · ${medicine.composition}` : ""}</option>) : <option value="">No matching medicines</option>}</select></label><label className="form-label">Your price<div className="currency-input"><span>₹</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></div></label><div className="no-quantity-note"><CheckCircle2 size={16} /><span>This adds the medicine to your carry list. You won't be asked for a stock count.</span></div><div className="dialog-actions"><button className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={!selectedId || Number(price) <= 0} onClick={() => onAdd(selectedId, Number(price))}><Plus size={16} />Add to carry list</button></div></section></div>;
 }
 
 export default App;

@@ -48,6 +48,17 @@ def is_clinical_question(question: str) -> bool:
     return bool(CLINICAL_PATTERN.search(question))
 
 
+async def _candidate_products(database: Any, question: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Fetch only catalog entries related to the question (the catalog has ~11k medicines)."""
+    fields = {"_id": 0, "id": 1, "name": 1, "category": 1, "pack": 1, "form": 1, "manufacturer": 1, "composition": 1}
+    try:
+        return await database.medicines.find({"$text": {"$search": question}}, {**fields, "score": {"$meta": "textScore"}}).sort(
+            [("score", {"$meta": "textScore"})]
+        ).limit(limit).to_list(limit)
+    except Exception:
+        return await database.medicines.find({}, fields).to_list(500)
+
+
 def make_catalog_documents(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     documents = []
     for product in products:
@@ -57,8 +68,9 @@ def make_catalog_documents(products: list[dict[str, Any]]) -> list[dict[str, Any
         text = (
             f"Medicine: {name.strip()}. "
             f"Category: {product.get('category', 'not specified')}. "
-            f"Pack: {product.get('pack', 'not specified')}. "
-            f"Manufacturer: {product.get('manufacturer', 'not specified')}."
+            f"Form: {product.get('form') or product.get('pack') or 'not specified'}. "
+            f"Composition: {product.get('composition') or 'not specified'}."
+            + (f" Manufacturer: {product['manufacturer']}." if product.get("manufacturer") else "")
         )
         documents.append({
             "id": f"catalog:{product.get('id', name)}",
@@ -223,7 +235,7 @@ async def answer_medicine_question(database: Any, question: str, user_id: str) -
     reviewed_documents = await database.medicine_knowledge.find(
         {"review_status": "approved", "active": {"$ne": False}}, {"_id": 0}
     ).to_list(1000)
-    products = await database.medicines.find({}, {"_id": 0}).to_list(500)
+    products = await _candidate_products(database, cleaned_question)
     catalog_documents = make_catalog_documents(products)
     clinical_question = is_clinical_question(cleaned_question)
     if clinical_question and not reviewed_documents:

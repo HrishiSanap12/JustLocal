@@ -1,13 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import { SavedLocation } from "@/src/api";
+import { GeocodeResult, reverseGeocode, searchAddresses } from "@/src/geocoding";
 import { makeStyles, useTheme } from "@/src/theme";
 import { storage } from "@/src/utils/storage";
 import { MapLocationPicker } from "./map-location-picker";
 import { MapCoordinate } from "./map-location-picker.types";
+import { showAlert } from "@/src/alert";
 
 const RECENTS_KEY = "justlocal_location_recents";
 const CURRENT_KEY = "justlocal_location_current";
@@ -76,15 +78,44 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
   const [detecting, setDetecting] = useState(false);
   const [manual, setManual] = useState("");
   const [mapPoint, setMapPoint] = useState<MapCoordinate | null>(null);
+  const [pointLabel, setPointLabel] = useState("");
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<GeocodeResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   useEffect(() => {
-    if (!visible) return;
+    const term = query.trim();
+    if (term.length < 3) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setSearching(true);
+      searchAddresses(term, mapPoint ?? (current?.latitude !== undefined && current.longitude !== undefined ? { latitude: current.latitude, longitude: current.longitude } : null), controller.signal)
+        .then((results) => { setSuggestions(results); setSearchError(results.length ? "" : "No matching places found."); })
+        .catch((err) => { if (!controller.signal.aborted) setSearchError(err instanceof Error ? err.message : "Search failed"); })
+        .finally(() => { if (!controller.signal.aborted) setSearching(false); });
+    }, 400);
+    return () => { controller.abort(); clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  // Reset the form each time the picker opens.
+  const handleShow = () => {
     void loadRecents().then(setRecents);
     setManual(current?.address ?? "");
+    setPointLabel(current?.label ?? "");
+    setQuery("");
+    setSuggestions([]);
+    setSearchError("");
     setMapPoint(current?.latitude !== undefined && current.longitude !== undefined
       ? { latitude: current.latitude, longitude: current.longitude }
       : null);
-  }, [visible, current]);
+  };
+
+  const changeQuery = (value: string) => {
+    setQuery(value);
+    if (value.trim().length < 3) { setSuggestions([]); setSearchError(""); }
+  };
 
   const persistPick = async (loc: SavedLocation) => {
     const next = [loc, ...recents.filter((r) => r.address !== loc.address)].slice(0, MAX_RECENTS);
@@ -104,7 +135,7 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== "granted") {
         if (!permission.canAskAgain) {
-          Alert.alert(
+          showAlert(
             "Location access needed",
             "Enable location for Justlocal in your device settings to use precise delivery.",
             [
@@ -113,7 +144,7 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
             ],
           );
         } else {
-          Alert.alert("Location permission needed", "We need location access to find your delivery point.");
+          showAlert("Location permission needed", "We need location access to find your delivery point.");
         }
         return;
       }
@@ -126,36 +157,53 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
         latitude: position.coords.latitude, longitude: position.coords.longitude, savedAt: Date.now(),
       });
     } catch (err) {
-      Alert.alert("Couldn't detect location", err instanceof Error ? err.message : "Please try again or type an address.");
+      showAlert("Couldn't detect location", err instanceof Error ? err.message : "Please try again or type an address.");
     } finally {
       setDetecting(false);
     }
   };
 
+  // Coordinates are required: typed text alone is not a location.
   const saveManual = async () => {
-    const trimmed = manual.trim();
-    if (!trimmed && !mapPoint) return;
-    const address = trimmed || `Pinned map location (${mapPoint!.latitude.toFixed(5)}, ${mapPoint!.longitude.toFixed(5)})`;
+    if (!mapPoint) {
+      showAlert("Pick a place", "Choose a search result or tap the map so pharmacies know where you are.");
+      return;
+    }
+    const address = manual.trim() || `Pinned map location (${mapPoint.latitude.toFixed(5)}, ${mapPoint.longitude.toFixed(5)})`;
     await persistPick({
       id: `loc-${Date.now()}`,
-      label: mapPoint ? "Pinned delivery location" : "Custom location",
+      label: pointLabel || "Pinned delivery location",
       address,
-      latitude: mapPoint?.latitude,
-      longitude: mapPoint?.longitude,
+      latitude: mapPoint.latitude,
+      longitude: mapPoint.longitude,
       savedAt: Date.now(),
     });
   };
 
+  const chooseSuggestion = (result: GeocodeResult) => {
+    setMapPoint({ latitude: result.latitude, longitude: result.longitude });
+    setManual(result.address);
+    setPointLabel(result.label);
+    setQuery("");
+    setSuggestions([]);
+  };
+
   const selectMapPoint = async (point: MapCoordinate) => {
     setMapPoint(point);
+    setPointLabel("Pinned delivery location");
     setManual(`Pinned map location (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
-    if (Platform.OS === "web") return;
+    if (Platform.OS !== "web") {
+      try {
+        const [place] = await Location.reverseGeocodeAsync(point);
+        const address = [place?.name, place?.street, place?.district, place?.city, place?.region, place?.postalCode].filter(Boolean).join(", ");
+        if (address) { setManual(address); return; }
+      } catch { /* fall back to Photon */ }
+    }
     try {
-      const [place] = await Location.reverseGeocodeAsync(point);
-      const address = [place?.name, place?.street, place?.district, place?.city, place?.region, place?.postalCode].filter(Boolean).join(", ");
-      if (address) setManual(address);
+      const place = await reverseGeocode(point.latitude, point.longitude);
+      if (place) { setManual(place.address); setPointLabel(place.label); }
     } catch {
-      // The address can still be entered manually if reverse geocoding is unavailable.
+      // The address can still be typed if reverse geocoding is unavailable.
     }
   };
 
@@ -166,7 +214,7 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
   };
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} onShow={handleShow}>
       <View style={styles.root}>
         <View style={styles.header}>
           <Press testID="location-modal-close" onPress={onClose} style={styles.iconButton}><Ionicons name="close" size={22} color={colors.onSurface} /></Press>
@@ -198,9 +246,29 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
           </>
         )}
 
-        {recents.length > 0 && <Text style={styles.section}>Saved & recent</Text>}
-        <ScrollView>
-          <Text style={styles.section}>Choose on map</Text>
+        <ScrollView keyboardShouldPersistTaps="handled">
+          <Text style={styles.section}>Search for a place</Text>
+          <TextInput
+            testID="location-search-input"
+            style={styles.input}
+            value={query}
+            onChangeText={changeQuery}
+            placeholder="Area, street, landmark…"
+            placeholderTextColor={colors.muted}
+            autoCorrect={false}
+          />
+          {searching && <ActivityIndicator color={colors.brandPrimary} style={{ marginBottom: 8 }} />}
+          {searchError ? <Text style={styles.mapHint}>{searchError}</Text> : null}
+          {suggestions.map((result, index) => (
+            <Press key={`${result.latitude}-${result.longitude}-${index}`} testID={`location-suggestion-${index}`} style={styles.row} onPress={() => chooseSuggestion(result)}>
+              <View style={styles.rowIcon}><Ionicons name="search" size={16} color={colors.brandPrimary} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowLabel}>{result.label}</Text>
+                <Text style={styles.rowAddress} numberOfLines={2}>{result.address}</Text>
+              </View>
+            </Press>
+          ))}
+          <Text style={styles.section}>Or choose on map</Text>
           <MapLocationPicker selected={mapPoint} onSelect={(point) => void selectMapPoint(point)} />
           <Text style={styles.mapHint}>{mapPoint ? "Pin selected. Add or adjust the delivery address below." : "Tap the map to place a pin at your delivery point."}</Text>
           <Text style={styles.section}>Delivery address</Text>
@@ -209,16 +277,18 @@ export function LocationModal({ visible, onClose, onPick, current }: { visible: 
             style={styles.input}
             value={manual}
             onChangeText={setManual}
-            placeholder={mapPoint ? "Flat, building, street, area…" : "Flat 12B, Rose Apartments, MG Road…"}
+            placeholder={mapPoint ? "Flat, building, street, area…" : "Search or tap the map first"}
+            editable={Boolean(mapPoint)}
             placeholderTextColor={colors.muted}
             returnKeyType="done"
             onSubmitEditing={saveManual}
           />
-          <Press testID="location-manual-save" style={styles.primary} onPress={saveManual} disabled={!manual.trim() && !mapPoint}>
-            <Text style={styles.primaryText}>{mapPoint ? "Save this location" : "Save this address"}</Text>
+          <Press testID="location-manual-save" style={styles.primary} onPress={saveManual} disabled={!mapPoint}>
+            <Text style={styles.primaryText}>{mapPoint ? "Save this location" : "Pick a place first"}</Text>
             <Ionicons name="arrow-forward" size={16} color={colors.onBrandPrimary} />
           </Press>
-          <Text style={styles.hint}>The pin supplies precise coordinates; the address helps the pharmacy find your door.</Text>
+          <Text style={styles.hint}>The pin supplies the coordinates; add your flat or building so the pharmacy can find your door. Address search uses OpenStreetMap (Photon).</Text>
+          {recents.length > 0 && <Text style={styles.section}>Saved & recent</Text>}
           {recents.map((item) => (
             <View key={item.id} style={styles.row}>
               <Press style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 12 }} onPress={() => persistPick(item)}>

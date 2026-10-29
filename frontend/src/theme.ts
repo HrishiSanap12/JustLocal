@@ -36,53 +36,47 @@ import { Appearance, StyleSheet, useColorScheme } from "react-native";
 export type ColorScheme = "light" | "dark";
 
 const light = {
-  // ---------------------------------------------------------------------------
-  // Surfaces: backgrounds, from the screen down to small fills.
-  // Each `on` key is the text and icon color for that background.
-  // ---------------------------------------------------------------------------
-  surface: "#FFFFFF", // primary canvas, most of every screen
-  onSurface: "#0B2545", // text and icons on the canvas
-  surfaceSecondary: "#F4F7F6", // cards, sheets, list rows
-  onSurfaceSecondary: "#134074", // text and icons on cards, sheets, rows
-  surfaceTertiary: "#E2E8F0", // input backgrounds, chips, deepest nesting
-  onSurfaceTertiary: "#0B2545", // text on inputs and chips; also muted text
-  surfaceInverse: "#0B2545", // tooltips, snackbars, anything popping against the theme
-  onSurfaceInverse: "#FFFFFF", // text and icons on the inverse surface
-  muted: "#64748B", // subdued text on surface: captions, timestamps, placeholders
+  // Surfaces
+  surface: "#F2F6F5", // app canvas (soft mint grey)
+  onSurface: "#0F1E2E", // primary text
+  surfaceSecondary: "#FFFFFF", // cards, sheets, list rows
+  onSurfaceSecondary: "#3B4A5C", // body text on cards
+  surfaceTertiary: "#E6EFED", // inputs, chips, nested fills
+  onSurfaceTertiary: "#0F1E2E",
+  surfaceInverse: "#0F1E2E",
+  onSurfaceInverse: "#FFFFFF",
+  muted: "#7A8797", // captions, placeholders
 
-  // ---------------------------------------------------------------------------
-  // Brand: the identity color and the fills built from it.
-  // Neutral by default; replace with the design guidelines values.
-  // ---------------------------------------------------------------------------
-  brand: "#0EA5E9", // base hue, anchor only; Primary, Secondary, Tertiary are weights of it
-  onBrand: "#FFFFFF", // text and icons placed directly on brand
-  brandPrimary: "#0D9488", // primary CTA, active tab indicator, selected states
-  onBrandPrimary: "#FFFFFF", // text and icons on brandPrimary
-  brandSecondary: "#0284C7", // secondary CTA, less prominent accents
-  onBrandSecondary: "#FFFFFF", // text and icons on brandSecondary
-  brandTertiary: "#CCFBF1", // chips, tags, badges, subtle brand moments
-  onBrandTertiary: "#115E59", // text and icons on brandTertiary
+  // Brand (deep teal)
+  brand: "#0E8F7E",
+  onBrand: "#FFFFFF",
+  brandPrimary: "#0E8F7E", // primary CTA, active states
+  onBrandPrimary: "#FFFFFF",
+  brandSecondary: "#0A5F55", // darker teal: gradients, floating nav
+  onBrandSecondary: "#FFFFFF",
+  brandTertiary: "#D7F0EA", // soft teal chips and icon wells
+  onBrandTertiary: "#0A5F55",
+  accent: "#E3F98E", // lime highlight (badges like "Available")
+  onAccent: "#2F3A06",
 
-  // ---------------------------------------------------------------------------
-  // Status: semantic only, never decorative. Fill for badges, banners and
-  // toasts; the `on` key is text on that fill. The plain key is also safe as
-  // text on `surface`.
-  // ---------------------------------------------------------------------------
-  success: "#10B981",
+  // Status
+  success: "#16A34A",
   onSuccess: "#FFFFFF",
-  warning: "#F59E0B",
+  warning: "#E08A00",
   onWarning: "#FFFFFF",
-  error: "#EF4444",
+  error: "#E5484D",
   onError: "#FFFFFF",
-  info: "#3B82F6",
+  info: "#3E63DD",
   onInfo: "#FFFFFF",
 
-  // ---------------------------------------------------------------------------
   // Lines
-  // ---------------------------------------------------------------------------
-  border: "#E2E8F0", // hairline outline, 0.5pt or 1pt max: inputs, cards
-  borderStrong: "#0D9488", // focus rings, selected outlines, 1.5pt max
-  divider: "#F1F5F9", // subtle list separators
+  border: "#E3EAE8",
+  borderStrong: "#0E8F7E",
+  divider: "#EDF2F1",
+
+  // Elevation (CSS box-shadow strings, supported on native and web)
+  shadowSoft: "0px 6px 18px rgba(15, 30, 46, 0.06)",
+  shadowLift: "0px 14px 30px rgba(10, 95, 85, 0.22)",
 };
 
 export type ThemeColors = typeof light;
