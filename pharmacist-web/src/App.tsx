@@ -527,6 +527,15 @@ function App() {
       ? "Keep your pharmacy's medicine list and prices up to date. No stock counts."
       : "Orders appear here after a customer chooses your offer.";
 
+  if (!liveToken) {
+    return (
+      <>
+        <AuthDialog page onClose={() => undefined} onLogin={signIn} onRegister={registerPharmacy} />
+        {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
+      </>
+    );
+  }
+
   return (
     <div className="workspace">
       <aside className="sidebar">
@@ -555,7 +564,7 @@ function App() {
         <div className="sidebar-bottom">
           <div className="support-link"><CircleHelp size={17} /><span>Help & support</span><ArrowUpRightIcon /></div>
           <div className="profile-block">
-            <div className="profile-avatar">{pharmacist?.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() ?? "JL"}</div>
+            <div className="profile-avatar">{pharmacist ? pharmacist.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() : <Store size={15} />}</div>
             <div className="profile-copy"><strong>{pharmacist?.name ?? "Not signed in"}</strong><span>{pharmacist?.email ?? "Pharmacist account"}</span></div>
             <button className="icon-button quiet" aria-label={liveToken ? "Sign out" : "Sign in"} onClick={() => liveToken ? void signOut() : setAuthOpen(true)}>{liveToken ? <X size={16} /> : <ChevronDown size={16} />}</button>
           </div>
@@ -569,7 +578,7 @@ function App() {
           <div className="topbar-actions">
             <div className="branch-state"><span className="state-dot" /><span>{pharmacist?.area || "No branch connected"}</span></div>
             <button className="icon-button notification-button" aria-label="Notifications" onClick={() => notify("No new notifications.")}><Bell size={18} /></button>
-            <button className="top-profile" aria-label={liveToken ? "Sign out" : "Sign in"} onClick={() => liveToken ? void signOut() : setAuthOpen(true)}><span className="profile-avatar small">{pharmacist?.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() ?? "JL"}</span>{liveToken ? <X size={15} /> : <ChevronDown size={15} />}</button>
+            <button className="top-profile" aria-label={liveToken ? "Sign out" : "Sign in"} onClick={() => liveToken ? void signOut() : setAuthOpen(true)}><span className="profile-avatar small">{pharmacist ? pharmacist.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase() : <Store size={13} />}</span>{liveToken ? <X size={15} /> : <ChevronDown size={15} />}</button>
           </div>
         </header>
 
