@@ -1,11 +1,16 @@
 import Constants from "expo-constants";
+import { Platform } from "react-native";
 
-export type User = { id: string; name: string; email: string; phone?: string | null; addresses: Address[]; family_members: FamilyMember[] };
+export type User = { id: string; name: string; email: string; email_verified?: boolean; phone?: string | null; addresses: Address[]; family_members: FamilyMember[] };
 export type Address = { id: string; label: string; address: string; phone?: string | null; default?: boolean };
 export type FamilyMember = { id: string; name: string; relation: string; age?: number | null; allergies?: string | null };
 export type Refill = { id: string; medicine_id: string; medicine_name: string; quantity: number; price: number; pharmacy_id?: string; pharmacy_name?: string; for_profile_id?: string | null; for_profile_name?: string | null; next_refill_at: string; status: string; last_order_id?: string };
 export type SavedLocation = { id: string; label: string; address: string; latitude?: number; longitude?: number; savedAt: number };
-export type Medicine = { id: string; name: string; pack: string; manufacturer: string; price: number; category: string; prescription_required: boolean; availability: string; nearby_stores: number; composition: string };
+export type Medicine = {
+  id: string; name: string; pack: string; form: string; manufacturer: string; price: number | null; category: string;
+  prescription_required: boolean; prescription_flag_inferred: boolean; availability: string; nearby_stores: number; composition: string;
+  image_url: string | null; uses: string[]; side_effects: string[];
+};
 export type Category = { id: string; name: string; icon: string; group: string; count: number };
 export type Pharmacy = { id: string; name: string; area: string; distance: string; distance_km?: number; latitude?: number; longitude?: number; accepting_requests?: boolean; eta: string; rating: number; reviews: string; threshold: number; status: string };
 export type Offer = { id: string; title: string; subtitle: string; code: string; detail: string; accent: string };
@@ -44,6 +49,22 @@ export type MedicineChatReply = {
   emergency: boolean;
   disclaimer: string;
 };
+export type AuthSuccess = { token: string; user: User };
+export type VerificationPending = { verification_required: true; email: string; dev_code?: string; code_expires_in_minutes?: number };
+export type AuthResult = AuthSuccess | VerificationPending;
+export function needsVerification(result: AuthResult): result is VerificationPending {
+  return (result as VerificationPending).verification_required === true;
+}
+export type ExtractedMedicine = { name: string; strength?: string; frequency?: string; dosage?: string; duration?: string };
+export type PrescriptionAnalysis = {
+  prescription_id: string;
+  provider: "none" | "tesseract" | "veryfi";
+  status: "completed" | "failed" | "unavailable";
+  message: string;
+  ocr_text: string;
+  medicines: ExtractedMedicine[];
+};
+
 export type RazorpayCheckout = {
   order_id: string;
   razorpay_order_id: string;
@@ -110,9 +131,14 @@ function normalizeMedicines(payload: unknown): Medicine[] {
       name,
       pack: stringField(record, "pack") ?? "",
       manufacturer: stringField(record, "manufacturer") ?? "",
-      price: numberField(record, "price"),
+      form: stringField(record, "form") ?? stringField(record, "pack") ?? "",
+      price: typeof record.price === "number" && Number.isFinite(record.price) ? record.price : null,
       category,
       prescription_required: record.prescription_required === true,
+      prescription_flag_inferred: record.prescription_flag_source === "inferred",
+      image_url: stringField(record, "image_url") ?? null,
+      uses: Array.isArray(record.uses) ? record.uses.filter((item): item is string => typeof item === "string") : [],
+      side_effects: Array.isArray(record.side_effects) ? record.side_effects.filter((item): item is string => typeof item === "string") : [],
       availability: stringField(record, "availability") ?? "In stock",
       nearby_stores: numberField(record, "nearby_stores"),
       composition: stringField(record, "composition") ?? "",
@@ -131,14 +157,18 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
 }
 
 export const api = {
-  login: (identifier: string, password: string) => request<{ token: string; user: User }>("/auth/login", { method: "POST", body: JSON.stringify({ identifier, password }) }),
-  register: (name: string, email: string, phone: string, password: string) => request<{ token: string; user: User }>("/auth/register", { method: "POST", body: JSON.stringify({ name, email, phone, password }) }),
+  login: (identifier: string, password: string) => request<AuthResult>("/auth/login", { method: "POST", body: JSON.stringify({ identifier, password }) }),
+  register: (name: string, email: string, phone: string, password: string) => request<AuthResult>("/auth/register", { method: "POST", body: JSON.stringify({ name, email, phone, password }) }),
+  verifyEmail: (email: string, code: string) => request<AuthSuccess>("/auth/verify-email", { method: "POST", body: JSON.stringify({ email, code }) }),
+  resendCode: (email: string) => request<{ ok: boolean; dev_code?: string }>("/auth/resend-code", { method: "POST", body: JSON.stringify({ email }) }),
+  ocrConfig: () => request<{ provider: "none" | "tesseract" | "veryfi"; external: boolean }>("/prescriptions/ocr-config"),
   apple: (identity_token: string, name?: string, email?: string) => request<{ token: string; user: User }>("/auth/apple", { method: "POST", body: JSON.stringify({ identity_token, name, email }) }),
   exchangeSession: (session_id: string) => request<{ session_token: string; user: User }>("/auth/session", { method: "POST", body: JSON.stringify({ session_id }) }),
   logout: (token: string) => request<{ ok: boolean }>("/auth/logout", { method: "POST" }, token).catch(() => ({ ok: true })),
   me: (token: string) => request<User>("/me", {}, token),
   categories: async () => normalizeCategories(await request<unknown>("/categories")),
-  medicines: async (category?: string, search?: string) => normalizeMedicines(await request<unknown>(`/medicines?${new URLSearchParams({ ...(category ? { category } : {}), ...(search ? { search } : {}) }).toString()}`)),
+  medicines: async (category?: string, search?: string, limit = 40) => normalizeMedicines(await request<unknown>(`/medicines?${new URLSearchParams({ ...(category ? { category } : {}), ...(search ? { search } : {}), limit: String(limit) }).toString()}`)),
+  medicine: async (id: string) => normalizeMedicines([await request<unknown>(`/medicines/${encodeURIComponent(id)}`)])[0] ?? null,
   pharmacies: (latitude?: number, longitude?: number) => request<Pharmacy[]>(`/pharmacies${latitude !== undefined && longitude !== undefined ? `?${new URLSearchParams({ latitude: String(latitude), longitude: String(longitude) })}` : ""}`),
   offers: () => request<Offer[]>("/offers"),
   orders: (token: string) => request<Order[]>("/orders", {}, token),
@@ -157,83 +187,21 @@ export const api = {
   razorpayConfig: () => request<{ ready: boolean; key_id: string }>("/payments/razorpay/config"),
   razorpayOrder: (token: string, order_id: string) => request<RazorpayCheckout>("/payments/razorpay/order", { method: "POST", body: JSON.stringify({ order_id }) }, token),
   razorpayVerify: (token: string, body: object) => request<{ ok: boolean; status: string }>("/payments/razorpay/verify", { method: "POST", body: JSON.stringify(body) }, token),
-  uploadPrescription: async (
-  token: string,
-  uri: string,
-  name: string
-) => {
-  const form = new FormData();
-
-  if (typeof window !== "undefined") {
-    // WEB / CHROME
-    const blobResponse = await fetch(uri);
-    const blob = await blobResponse.blob();
-
-    form.append(
-      "file",
-      blob,
-      name || "prescription.jpg"
-    );
-  } else {
-    // ANDROID / IOS
-    form.append(
-      "file",
-      {
-        uri,
-        type: "image/jpeg",
-        name: name || "prescription.jpg",
-      } as any
-    );
-  }
-
-  const response = await fetch(
-    `${API_URL}/api/prescriptions`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: form,
+  uploadPrescription: async (token: string, uri: string, name: string, mimeType?: string | null) => {
+    const form = new FormData();
+    const filename = name || "prescription.jpg";
+    if (Platform.OS === "web") {
+      const blob = await (await fetch(uri)).blob();
+      form.append("file", blob, filename);
+    } else {
+      form.append("file", { uri, type: mimeType || "image/jpeg", name: filename } as unknown as Blob);
     }
-  );
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(
-      payload.detail ||
-      `Prescription upload failed (${response.status})`
-    );
-  }
-
-  return payload as {
-    id: string;
-    filename: string;
-    status: string;
-  };
-},
-  analyzePrescription: async (
-  token: string,
-  prescriptionId: string
-) => {
-  const response = await fetch(
-    `${API_URL}/api/prescriptions/${prescriptionId}/analyze`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    }
-  );
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(
-      payload.detail ?? "Prescription analysis failed"
-    );
-  }
-
-  return payload;
-},
+    // No Content-Type header: fetch sets the multipart boundary itself.
+    const response = await fetch(`${API_URL}/api/prescriptions`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `Prescription upload failed (${response.status})`);
+    return payload as { id: string; filename: string; status: string };
+  },
+  analyzePrescription: (token: string, prescriptionId: string, externalOcrConsent: boolean) =>
+    request<PrescriptionAnalysis>(`/prescriptions/${prescriptionId}/analyze`, { method: "POST", body: JSON.stringify({ external_ocr_consent: externalOcrConsent }) }, token),
 };

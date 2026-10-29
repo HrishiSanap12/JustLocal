@@ -5,7 +5,7 @@ import { useTheme } from "@/src/theme";
 
 // A playful pill-capsule mark: two halves (teal + mint) with a divider bar and
 // a small medical cross badge in the centre. Used as the app logo.
-export function CapsulePill({ size = 68 }: { size?: number }) {
+export function CapsulePill({ size = 68, inverse = false }: { size?: number; inverse?: boolean }) {
   const { colors } = useTheme();
   const width = size * 1.72;
   const height = size;
@@ -23,9 +23,9 @@ export function CapsulePill({ size = 68 }: { size?: number }) {
           boxShadow: "0px 10px 18px rgba(13, 148, 136, 0.22)",
         }}
       >
-        <View style={{ flex: 1, backgroundColor: colors.brandPrimary }} />
-        <View style={{ width: 3, backgroundColor: colors.surface }} />
-        <View style={{ flex: 1, backgroundColor: colors.brandTertiary }} />
+        <View style={{ flex: 1, backgroundColor: inverse ? colors.surfaceSecondary : colors.brandPrimary }} />
+        <View style={{ width: 3, backgroundColor: inverse ? colors.brandSecondary : colors.surface }} />
+        <View style={{ flex: 1, backgroundColor: inverse ? colors.accent : colors.brandTertiary }} />
       </View>
       <View
         style={{
@@ -45,11 +45,11 @@ export function CapsulePill({ size = 68 }: { size?: number }) {
   );
 }
 
-export function Wordmark({ size = 30 }: { size?: number }) {
+export function Wordmark({ size = 30, inverse = false }: { size?: number; inverse?: boolean }) {
   const { colors } = useTheme();
   return (
-    <Text style={{ fontSize: size, fontWeight: "900", color: colors.onSurface, letterSpacing: -0.8 }}>
-      Just<Text style={{ color: colors.brandPrimary }}>local</Text>
+    <Text style={{ fontSize: size, fontWeight: "900", color: inverse ? colors.onBrandPrimary : colors.onSurface, letterSpacing: -0.8 }}>
+      Just<Text style={{ color: inverse ? colors.accent : colors.brandPrimary }}>local</Text>
     </Text>
   );
 }

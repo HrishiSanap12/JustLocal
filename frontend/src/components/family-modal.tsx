@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import { api, FamilyMember } from "@/src/api";
 import { makeStyles, useTheme } from "@/src/theme";
+import { showAlert } from "@/src/alert";
 
 const RELATIONS: { value: string; label: string; icon: React.ComponentProps<typeof Ionicons>["name"] }[] = [
   { value: "self", label: "Myself", icon: "person" },
@@ -65,7 +66,7 @@ export function FamilyModal({ visible, onClose, token, activeId, members, onChan
   }, [visible]);
 
   const save = async () => {
-    if (!name.trim()) { Alert.alert("Add a name", "Please give this profile a name."); return; }
+    if (!name.trim()) { showAlert("Add a name", "Please give this profile a name."); return; }
     setSaving(true);
     try {
       const parsedAge = age.trim() ? Number(age) : undefined;
@@ -73,7 +74,7 @@ export function FamilyModal({ visible, onClose, token, activeId, members, onChan
       onChange([...(members ?? []), added]);
       setName(""); setAge(""); setAllergies(""); setRelation("child");
     } catch (err) {
-      Alert.alert("Couldn't save profile", err instanceof Error ? err.message : "Please try again.");
+      showAlert("Couldn't save profile", err instanceof Error ? err.message : "Please try again.");
     } finally {
       setSaving(false);
     }
@@ -86,7 +87,7 @@ export function FamilyModal({ visible, onClose, token, activeId, members, onChan
       onChange(next);
       if (activeId === member.id) onPick(null);
     } catch (err) {
-      Alert.alert("Couldn't remove profile", err instanceof Error ? err.message : "Please try again.");
+      showAlert("Couldn't remove profile", err instanceof Error ? err.message : "Please try again.");
     }
   };
 

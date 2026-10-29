@@ -11,6 +11,11 @@ import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from email_otp import check_code, send_code
+
+PHARMACIST_OTP_PURPOSE = "pharmacist-email"
+MAX_ASSIGNED_PHARMACIES = 5
+
 
 def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> APIRouter:
     router = APIRouter(prefix="/api")
@@ -29,6 +34,13 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
     class PharmacistLogin(BaseModel):
         email: str
         password: str
+
+    class PharmacistVerifyEmail(BaseModel):
+        email: str
+        code: str = Field(min_length=4, max_length=10)
+
+    class PharmacistResendCode(BaseModel):
+        email: str
 
     class RequestItem(BaseModel):
         medicine_id: Optional[str] = None
@@ -199,9 +211,39 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
             "phone": payload.phone.strip(),
             "password_hash": bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt()).decode(),
             "status": "pending",
+            "email_verified": False,
             "created_at": now_iso(),
         })
-        return {"pharmacy_id": pharmacy_id, "status": "pending", "message": "Application submitted for manual verification."}
+        try:
+            extra = await send_code(db, email, PHARMACIST_OTP_PURPOSE, "pharmacy account")
+        except HTTPException:
+            # Application is saved; the pharmacist can request a new code from the sign-in screen.
+            extra = {"email_send_failed": True}
+        return {
+            "pharmacy_id": pharmacy_id, "status": "pending", "verification_required": True, "email": email, **extra,
+            "message": "Application submitted. Verify your email, then wait for manual pharmacy verification.",
+        }
+
+    @router.post("/pharmacist/auth/verify-email")
+    async def pharmacist_verify_email(payload: PharmacistVerifyEmail) -> dict:
+        email = payload.email.strip().lower()
+        account = await db.pharmacist_accounts.find_one({"email": email}, {"_id": 0, "id": 1, "email_verified": 1, "status": 1})
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+        if account.get("email_verified", True):
+            return {"email_verified": True, "status": account.get("status")}
+        await check_code(db, email, PHARMACIST_OTP_PURPOSE, payload.code)
+        await db.pharmacist_accounts.update_one({"id": account["id"]}, {"$set": {"email_verified": True, "email_verified_at": now_iso()}})
+        return {"email_verified": True, "status": account.get("status"), "message": "Email verified. Your pharmacy is awaiting manual verification." if account.get("status") != "verified" else "Email verified. You can sign in."}
+
+    @router.post("/pharmacist/auth/resend-code")
+    async def pharmacist_resend_code(payload: PharmacistResendCode) -> dict:
+        email = payload.email.strip().lower()
+        account = await db.pharmacist_accounts.find_one({"email": email}, {"_id": 0, "email_verified": 1})
+        if not account or account.get("email_verified", True):
+            return {"ok": True}
+        extra = await send_code(db, email, PHARMACIST_OTP_PURPOSE, "pharmacy account")
+        return {"ok": True, **extra}
 
     @router.post("/pharmacist/auth/login")
     async def pharmacist_login(payload: PharmacistLogin) -> dict:
@@ -209,6 +251,8 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         password_hash = account.get("password_hash", "") if account else ""
         if not account or not bcrypt.checkpw(payload.password.encode(), password_hash.encode()):
             raise HTTPException(status_code=401, detail="Email or password is incorrect")
+        if not account.get("email_verified", True):
+            raise HTTPException(status_code=403, detail="Verify your email before signing in. Use the code we emailed you.")
         if account.get("status") != "verified":
             raise HTTPException(status_code=403, detail="Your pharmacy application is awaiting manual verification")
         pharmacy = await db.pharmacies.find_one({"id": account["pharmacy_id"], "verification_status": "verified"})
@@ -252,7 +296,7 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
                 **pharmacy,
                 "pharmacist": {
                     key: account_by_pharmacy[pharmacy["id"]].get(key)
-                    for key in ("id", "name", "email", "phone")
+                    for key in ("id", "name", "email", "phone", "email_verified")
                 } if pharmacy["id"] in account_by_pharmacy else None,
             }
             for pharmacy in pharmacies
@@ -264,6 +308,8 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         pharmacy = await db.pharmacies.find_one({"id": pharmacy_id, "verification_status": "pending"})
         if not pharmacy:
             raise HTTPException(status_code=404, detail="Pending pharmacy not found")
+        if await db.pharmacist_accounts.find_one({"pharmacy_id": pharmacy_id, "status": "pending", "email_verified": False}):
+            raise HTTPException(status_code=409, detail="The pharmacist has not verified their email yet")
         await db.pharmacies.update_one({"id": pharmacy_id}, {"$set": {"verification_status": "verified", "verified_at": now_iso(), "accepting_requests": True}})
         await db.pharmacist_accounts.update_many({"pharmacy_id": pharmacy_id, "status": "pending"}, {"$set": {"status": "verified", "verified_at": now_iso()}})
         return {"pharmacy_id": pharmacy_id, "status": "verified"}
@@ -275,15 +321,23 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         return {"accepting_requests": payload.accepting_requests}
 
     @router.get("/pharmacist/catalog")
-    async def pharmacist_catalog(search: Optional[str] = None, pharmacist: dict = Depends(current_pharmacist)) -> list:
-        query: dict = {}
-        if search:
-            escaped = re.escape(search.strip())
-            query["$or"] = [{"name": {"$regex": escaped, "$options": "i"}}, {"manufacturer": {"$regex": escaped, "$options": "i"}}, {"composition": {"$regex": escaped, "$options": "i"}}]
-        products = await db.medicines.find(query, {"_id": 0}).to_list(200)
+    async def pharmacist_catalog(search: Optional[str] = None, limit: int = 60, pharmacist: dict = Depends(current_pharmacist)) -> list:
         pharmacy_id = pharmacist["pharmacy"]["id"]
-        entries = await db.pharmacy_carry_list.find({"pharmacy_id": pharmacy_id}, {"_id": 0}).to_list(500)
+        limit = max(1, min(limit, 100))
+        entries = await db.pharmacy_carry_list.find({"pharmacy_id": pharmacy_id}, {"_id": 0}).to_list(5000)
         by_medicine = {entry["medicine_id"]: entry for entry in entries}
+        fields = {"_id": 0, "name_lower": 0, "uses": 0, "side_effects": 0, "source_url": 0, "imported_at": 0}
+        term = (search or "").strip()
+        if term:
+            escaped = re.escape(term.casefold())
+            products = await db.medicines.find(
+                {"$or": [{"name_lower": {"$regex": escaped}}, {"composition": {"$regex": re.escape(term), "$options": "i"}}]}, fields
+            ).sort("name_lower", 1).limit(limit).to_list(limit)
+        else:
+            carried_ids = [medicine_id for medicine_id, entry in by_medicine.items() if entry.get("carried")]
+            carried = await db.medicines.find({"id": {"$in": carried_ids}}, fields).to_list(5000) if carried_ids else []
+            others = await db.medicines.find({"id": {"$nin": carried_ids}}, fields).sort("name_lower", 1).limit(limit).to_list(limit)
+            products = carried + others
         return [{**product, "carried": bool(by_medicine.get(product["id"], {}).get("carried", False)), "pharmacy_price": by_medicine.get(product["id"], {}).get("price")} for product in products]
 
     @router.get("/pharmacist/carry-list")
@@ -300,8 +354,8 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         product = await db.medicines.find_one({"id": payload.medicine_id}, {"_id": 0})
         if not product:
             raise HTTPException(status_code=404, detail="Medicine not found in the shared catalog")
-        maximum_price = float(product.get("mrp", product.get("price", 0)))
-        if payload.price > maximum_price:
+        maximum_price = product.get("mrp") or product.get("price")
+        if maximum_price is not None and payload.price > float(maximum_price):
             raise HTTPException(status_code=422, detail="Pharmacy price cannot exceed the catalog maximum retail price")
         pharmacy_id = pharmacist["pharmacy"]["id"]
         document = {"pharmacy_id": pharmacy_id, "medicine_id": payload.medicine_id, "price": payload.price, "carried": payload.carried, "updated_at": now_iso()}
@@ -318,8 +372,8 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
             product = await db.medicines.find_one({"id": medicine_id}, {"_id": 0})
             if not product:
                 raise HTTPException(status_code=404, detail="Medicine not found in the shared catalog")
-            maximum_price = float(product.get("mrp", product.get("price", 0)))
-            if update["price"] > maximum_price:
+            maximum_price = product.get("mrp") or product.get("price")
+            if maximum_price is not None and update["price"] > float(maximum_price):
                 raise HTTPException(status_code=422, detail="Pharmacy price cannot exceed the catalog maximum retail price")
         update["updated_at"] = now_iso()
         result = await db.pharmacy_carry_list.update_one({"pharmacy_id": pharmacy_id, "medicine_id": medicine_id}, {"$set": update})
@@ -386,21 +440,30 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         candidate_pharmacies = await db.pharmacies.find(
             {"verification_status": "verified", "accepting_requests": True}, {"_id": 0}
         ).to_list(100)
+        carriers: Optional[set] = None
+        if item_ids:
+            # Route catalog requests only to pharmacies whose carry list includes at least one requested item.
+            entries = await db.pharmacy_carry_list.find(
+                {"medicine_id": {"$in": item_ids}, "carried": True}, {"_id": 0, "pharmacy_id": 1}
+            ).to_list(5000)
+            carriers = {entry["pharmacy_id"] for entry in entries}
         candidates = []
         for pharmacy in candidate_pharmacies:
             pharmacy_latitude = pharmacy.get("latitude")
             pharmacy_longitude = pharmacy.get("longitude")
-            distance = None
-            if isinstance(pharmacy_latitude, (int, float)) and isinstance(pharmacy_longitude, (int, float)):
-                distance = distance_km(payload.latitude, payload.longitude, pharmacy_latitude, pharmacy_longitude)
-            candidates.append((distance, pharmacy))
-        candidates.sort(key=lambda pair: pair[0] if pair[0] is not None else float("inf"))
+            if not isinstance(pharmacy_latitude, (int, float)) or not isinstance(pharmacy_longitude, (int, float)):
+                continue
+            if carriers is not None and pharmacy["id"] not in carriers:
+                continue
+            candidates.append((distance_km(payload.latitude, payload.longitude, pharmacy_latitude, pharmacy_longitude), pharmacy))
+        candidates.sort(key=lambda pair: pair[0])
+        candidates = candidates[:MAX_ASSIGNED_PHARMACIES]
         assignments = [{
             "id": f"assignment-{uuid.uuid4().hex[:12]}",
             "request_id": request_id,
             "pharmacy_id": pharmacy["id"],
             "status": "invited",
-            "distance_km": round(distance, 2) if distance is not None else None,
+            "distance_km": round(distance, 2),
             "created_at": now_iso(),
         } for distance, pharmacy in candidates]
         if assignments:
@@ -541,6 +604,7 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         offered_custom_names = [item.requested_name.strip().casefold() for item in payload.items if item.requested_name]
         if len(set(offer_ids)) != len(offer_ids) or len(set(offered_custom_names)) != len(offered_custom_names):
             raise HTTPException(status_code=422, detail="A medicine can only appear once in an offer")
+        prescription_only = bool(request.get("prescription_id")) and not request.get("items")
         for item in payload.items:
             requested = requested_by_id.get(item.medicine_id) if item.medicine_id else requested_by_name.get(item.requested_name.strip().casefold())
             if requested and requested["quantity"] != item.quantity:
@@ -556,8 +620,8 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
         if len(carry_by_id) != len(product_ids):
             raise HTTPException(status_code=422, detail="Offer only medicines on your pharmacy carry list")
         for medicine_id, entry in carry_by_id.items():
-            maximum_price = float(product_by_id[medicine_id].get("mrp", product_by_id[medicine_id].get("price", 0)))
-            if entry["price"] > maximum_price:
+            maximum_price = product_by_id[medicine_id].get("mrp") or product_by_id[medicine_id].get("price")
+            if maximum_price is not None and entry["price"] > float(maximum_price):
                 raise HTTPException(status_code=409, detail="Update a pharmacy price that exceeds the catalog maximum retail price")
         product_names = {product["name"].strip().casefold() for product in product_by_id.values()}
         if payload.availability == "available":
@@ -572,8 +636,10 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
                 offer_items.append({"medicine_id": item.medicine_id, "requested_name": None, "name": product["name"], "pack": product.get("pack", ""), "quantity": item.quantity, "unit_price": unit_price, "total": round(item.quantity * unit_price, 2)})
             else:
                 requested_name = item.requested_name.strip()
-                if requested_name.casefold() not in requested_by_name or item.unit_price is None:
-                    raise HTTPException(status_code=422, detail="Custom offers must match a customer-entered medicine and include a price")
+                if item.unit_price is None:
+                    raise HTTPException(status_code=422, detail="Custom medicines need a price")
+                if requested_name.casefold() not in requested_by_name and not prescription_only:
+                    raise HTTPException(status_code=422, detail="Custom offers must match a customer-entered medicine")
                 offer_items.append({"medicine_id": None, "requested_name": requested_name, "name": requested_name, "pack": "Pharmacist confirmed", "quantity": item.quantity, "unit_price": item.unit_price, "total": round(item.quantity * item.unit_price, 2)})
         subtotal = round(sum(item["total"] for item in offer_items), 2)
         delivery_fee = 0 if subtotal >= 299 else 29

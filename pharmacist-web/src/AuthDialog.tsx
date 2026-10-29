@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, LockKeyhole, Store, X } from "lucide-react";
 import type { LatLngExpression } from "leaflet";
 import { CircleMarker, MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 
-import { PharmacyRegistration } from "./api";
+import { pharmacistApi, PharmacyRegistration, RegistrationResult } from "./api";
 
 type MapPoint = { latitude: number; longitude: number };
 const DEFAULT_MAP_CENTER: LatLngExpression = [20.5937, 78.9629];
@@ -38,9 +38,11 @@ function LocationMap({ point, onSelect }: { point: MapPoint | null; onSelect: (p
 export function AuthDialog({ onClose, onLogin, onRegister }: {
   onClose: () => void;
   onLogin: (email: string, password: string) => Promise<void>;
-  onRegister: (details: PharmacyRegistration) => Promise<string>;
+  onRegister: (details: PharmacyRegistration) => Promise<RegistrationResult>;
 }) {
-  const [mode, setMode] = useState<"login" | "register" | "pending">("login");
+  const [mode, setMode] = useState<"login" | "register" | "verify" | "pending">("login");
+  const [code, setCode] = useState("");
+  const [info, setInfo] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "", pharmacy_name: "", license_number: "", address: "" });
@@ -58,7 +60,14 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
     try {
       await onLogin(form.email, form.password);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Sign-in failed.");
+      const message = reason instanceof Error ? reason.message : "Sign-in failed.";
+      if (message.startsWith("Verify your email")) {
+        setMode("verify");
+        setInfo("Your email isn't verified yet. Enter the code we emailed you, or request a new one.");
+        setError("");
+        return;
+      }
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -73,7 +82,7 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
     setBusy(true);
     setError("");
     try {
-      const message = await onRegister({
+      const result = await onRegister({
         name: form.name,
         email: form.email,
         phone: form.phone,
@@ -84,12 +93,52 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
         latitude: location.latitude,
         longitude: location.longitude,
       });
-      setMode("pending");
-      setError(message);
+      if (result.verification_required) {
+        setMode("verify");
+        setCode(result.dev_code ?? "");
+        setInfo(result.email_send_failed
+          ? "Application saved, but we couldn't send the email. Use “Resend code”."
+          : `We sent a 6-digit code to ${result.email ?? form.email}.${result.dev_code ? " (Dev mode: code pre-filled.)" : ""}`);
+      } else {
+        setMode("pending");
+        setInfo(result.message);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Registration failed.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function submitCode(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const result = await pharmacistApi.verifyEmail(form.email, code);
+      if (result.status === "verified") {
+        setMode("login");
+        setInfo("");
+        setError("Email verified. You can sign in now.");
+      } else {
+        setMode("pending");
+        setInfo(result.message ?? "Email verified. Your pharmacy is awaiting manual verification.");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Verification failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendCode() {
+    setError("");
+    try {
+      const result = await pharmacistApi.resendCode(form.email);
+      if (result.dev_code) setCode(result.dev_code);
+      setInfo(`A new code was sent to ${form.email}.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Couldn't resend the code.");
     }
   }
 
@@ -117,11 +166,20 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
     <div className="modal-backdrop auth-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
         <div className="dialog-header">
-          <div><span className="section-label-text">JUSTLOCAL PHARMACY</span><h2 id="auth-title">{mode === "pending" ? "Application received" : mode === "login" ? "Sign in to your pharmacy" : "Register your pharmacy"}</h2></div>
+          <div><span className="section-label-text">JUSTLOCAL PHARMACY</span><h2 id="auth-title">{mode === "pending" ? "Application received" : mode === "verify" ? "Verify your email" : mode === "login" ? "Sign in to your pharmacy" : "Register your pharmacy"}</h2></div>
           <button className="icon-button quiet" aria-label="Close sign-in dialog" onClick={onClose}><X size={18} /></button>
         </div>
         {mode === "pending" ? (
-          <div className="pending-state"><span className="pending-icon"><Store size={20} /></span><strong>Manual verification is required</strong><p>{error}</p><p>We’ll enable pharmacist access after the pharmacy license and details are reviewed.</p><button className="button button-primary" onClick={onClose}>Done <ArrowRight size={15} /></button></div>
+          <div className="pending-state"><span className="pending-icon"><Store size={20} /></span><strong>Manual verification is required</strong><p>{info}</p><p>We’ll enable pharmacist access after the pharmacy license and details are reviewed.</p><button className="button button-primary" onClick={onClose}>Done <ArrowRight size={15} /></button></div>
+        ) : mode === "verify" ? (
+          <form onSubmit={submitCode} className="auth-form">
+            <p className="dialog-intro">{info || `Enter the 6-digit code sent to ${form.email}.`}</p>
+            <label className="form-label">Email<input type="email" required value={form.email} onChange={(event) => update("email", event.target.value)} /></label>
+            <label className="form-label">Verification code<input inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} /></label>
+            {error && <div className="auth-error" role="alert">{error}</div>}
+            <button className="button button-primary auth-submit" disabled={busy || code.length !== 6}>{busy ? "Verifying…" : "Verify email"}</button>
+            <div className="dialog-actions auth-form-actions"><button type="button" className="button button-quiet" onClick={() => { setMode("login"); setError(""); setInfo(""); }}><ArrowLeft size={14} />Back to sign in</button><button type="button" className="button button-quiet" onClick={() => void resendCode()}>Resend code</button></div>
+          </form>
         ) : mode === "login" ? (
           <form onSubmit={submitLogin} className="auth-form">
             <p className="dialog-intro">Sign in with the account for your verified pharmacy.</p>
@@ -130,6 +188,7 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
             {error && <div className="auth-error" role="alert">{error}</div>}
             <button className="button button-primary auth-submit" disabled={busy}><LockKeyhole size={15} />{busy ? "Signing in…" : "Sign in"}</button>
             <button type="button" className="auth-switch" onClick={() => { setMode("register"); setError(""); }}>Register a pharmacy <ArrowRight size={14} /></button>
+            <button type="button" className="auth-switch" onClick={() => { setMode("verify"); setError(""); setInfo("Enter your work email and the 6-digit code we sent. Use “Resend code” if it expired."); }}>Verify your email <ArrowRight size={14} /></button>
           </form>
         ) : (
           <form onSubmit={submitRegistration} className="auth-form register-form">

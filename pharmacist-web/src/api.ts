@@ -16,7 +16,7 @@ export type PendingPharmacy = {
   latitude: number;
   longitude: number;
   created_at: string;
-  pharmacist?: { id: string; name: string; email: string; phone: string } | null;
+  pharmacist?: { id: string; name: string; email: string; phone: string; email_verified?: boolean } | null;
 };
 export type PharmacyRegistration = { name: string; email: string; phone: string; password: string; pharmacy_name: string; license_number: string; address: string; latitude: number; longitude: number };
 
@@ -25,17 +25,21 @@ export type PharmacyProduct = {
   name: string;
   pack: string;
   manufacturer: string;
-  price: number;
+  price: number | null;
   category: string;
   prescription_required: boolean;
   composition?: string;
+  form?: string;
+  image_url?: string | null;
   carried: boolean;
   pharmacy_price: number | null;
   updated_at?: string;
 };
 
 export type PharmacyRequestItem = {
-  medicine_id: string;
+  medicine_id: string | null;
+  requested_name?: string | null;
+  custom?: boolean;
   name: string;
   pack: string;
   quantity: number;
@@ -59,7 +63,10 @@ export type PharmacyRequest = {
   offer?: { id: string; availability: string; total: number; status: string };
 };
 
-export type PharmacyOfferItem = { medicine_id: string; name: string; pack: string; quantity: number; unit_price: number; total: number };
+export type OfferLine = { medicine_id: string; quantity: number } | { requested_name: string; unit_price: number; quantity: number };
+export type RegistrationResult = { pharmacy_id: string; status: string; message: string; verification_required?: boolean; email?: string; dev_code?: string; email_send_failed?: boolean };
+
+export type PharmacyOfferItem = { medicine_id: string | null; name: string; pack: string; quantity: number; unit_price: number; total: number };
 export type PharmacyOrder = {
   id: string;
   order_number: string;
@@ -104,7 +111,9 @@ async function adminCall<T>(path: string, adminToken: string, init: RequestInit 
 
 export const pharmacistApi = {
   login: (email: string, password: string) => call<{ token: string; pharmacist: Pharmacist }>("/pharmacist/auth/login", undefined, { method: "POST", body: JSON.stringify({ email, password }) }),
-  register: (body: PharmacyRegistration) => call<{ pharmacy_id: string; status: string; message: string }>("/pharmacist/auth/register", undefined, { method: "POST", body: JSON.stringify(body) }),
+  register: (body: PharmacyRegistration) => call<RegistrationResult>("/pharmacist/auth/register", undefined, { method: "POST", body: JSON.stringify(body) }),
+  verifyEmail: (email: string, code: string) => call<{ email_verified: boolean; status: string; message?: string }>("/pharmacist/auth/verify-email", undefined, { method: "POST", body: JSON.stringify({ email, code }) }),
+  resendCode: (email: string) => call<{ ok: boolean; dev_code?: string }>("/pharmacist/auth/resend-code", undefined, { method: "POST", body: JSON.stringify({ email }) }),
   me: (token: string) => call<Pharmacist & { area: string; accepting_requests: boolean }>("/pharmacist/me", token),
   logout: (token: string) => call<{ ok: boolean }>("/pharmacist/auth/logout", token, { method: "POST" }),
   setAvailability: (token: string, accepting_requests: boolean) => call<{ accepting_requests: boolean }>("/pharmacist/availability", token, { method: "PATCH", body: JSON.stringify({ accepting_requests }) }),
@@ -115,7 +124,7 @@ export const pharmacistApi = {
   requests: (token: string) => call<PharmacyRequest[]>("/pharmacist/requests", token),
   prescription: (token: string, requestId: string) => call<{ filename: string; content_type: string; data_base64: string }>(`/pharmacist/requests/${requestId}/prescription`, token),
   reviewPrescription: (token: string, requestId: string, decision: "matches" | "clarification" | "not-approved", reason?: string) => call<{ decision: string }>(`/pharmacist/requests/${requestId}/prescription-review`, token, { method: "POST", body: JSON.stringify({ decision, reason }) }),
-  respond: (token: string, requestId: string, body: { availability: "available" | "partial" | "unavailable"; prescription_decision?: "matches" | "clarification" | "not-approved"; items?: { medicine_id: string; quantity: number }[]; eta_minutes?: number; note?: string }) => call<{ id: string; total: number; status: string }>(`/pharmacist/requests/${requestId}/offer`, token, { method: "POST", body: JSON.stringify(body) }),
+  respond: (token: string, requestId: string, body: { availability: "available" | "partial" | "unavailable"; prescription_decision?: "matches" | "clarification" | "not-approved"; items?: OfferLine[]; eta_minutes?: number; note?: string }) => call<{ id: string; total: number; status: string }>(`/pharmacist/requests/${requestId}/offer`, token, { method: "POST", body: JSON.stringify(body) }),
   orders: (token: string) => call<PharmacyOrder[]>("/pharmacist/orders", token),
   updateOrder: (token: string, orderId: string, status: "Preparing" | "Out for Delivery" | "Delivered") => call<{ id: string; status: string }>(`/pharmacist/orders/${orderId}/status`, token, { method: "PATCH", body: JSON.stringify({ status }) }),
 };

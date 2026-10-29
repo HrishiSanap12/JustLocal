@@ -124,14 +124,14 @@ export default function AdminPanel() {
                       <p>{pharmacy.address}</p>
                       <dl>
                         <div><dt>Pharmacist</dt><dd>{pharmacy.pharmacist?.name ?? "Not provided"}</dd></div>
-                        <div><dt>Email</dt><dd>{pharmacy.pharmacist?.email ?? "Not provided"}</dd></div>
+                        <div><dt>Email</dt><dd>{pharmacy.pharmacist?.email ?? "Not provided"}{pharmacy.pharmacist && (pharmacy.pharmacist.email_verified === false ? " (not verified yet)" : " (verified)")}</dd></div>
                         <div><dt>Phone</dt><dd>{pharmacy.pharmacist?.phone ?? "Not provided"}</dd></div>
                         <div><dt>License</dt><dd>{pharmacy.license_number}</dd></div>
                         <div><dt>Coordinates</dt><dd>{pharmacy.latitude.toFixed(5)}, {pharmacy.longitude.toFixed(5)}</dd></div>
                         <div><dt>Submitted</dt><dd>{new Date(pharmacy.created_at).toLocaleString()}</dd></div>
                       </dl>
                     </div>
-                    <button className="button button-primary application-verify" onClick={() => void verify(pharmacy)} disabled={verifyingId === pharmacy.id}>
+                    <button className="button button-primary application-verify" onClick={() => void verify(pharmacy)} disabled={verifyingId === pharmacy.id || pharmacy.pharmacist?.email_verified === false} title={pharmacy.pharmacist?.email_verified === false ? "Waiting for the pharmacist to verify their email" : undefined}>
                       <BadgeCheck size={16} />{verifyingId === pharmacy.id ? "Verifying…" : "Verify pharmacy"}
                     </button>
                   </article>

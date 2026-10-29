@@ -10,10 +10,9 @@ import logging
 import os
 import re
 import uuid
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
+import asyncio
+import io
+import shutil
 import bcrypt
 import httpx
 import jwt
@@ -24,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
+from catalog_import import ensure_dataset_imported
+from email_otp import check_code, send_code
 from pharmacy_routes import build_pharmacy_router
 from rag.pipeline import answer_medicine_question
 
@@ -31,6 +32,7 @@ from rag.pipeline import answer_medicine_question
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 load_dotenv(ROOT_DIR / ".admin.env")
+load_dotenv(ROOT_DIR / "_admin.env")
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -66,6 +68,19 @@ class RegisterInput(BaseModel):
     email: str
     phone: Optional[str] = None
     password: str
+
+
+class VerifyEmailInput(BaseModel):
+    email: str
+    code: str = Field(min_length=4, max_length=10)
+
+
+class ResendCodeInput(BaseModel):
+    email: str
+
+
+class AnalyzePrescriptionInput(BaseModel):
+    external_ocr_consent: bool = False
 
 
 class AppleSignInInput(BaseModel):
@@ -136,6 +151,7 @@ def safe_user(document: dict) -> dict:
         "id": document["id"],
         "name": document.get("name", "Justlocal member"),
         "email": document.get("email", ""),
+        "email_verified": document.get("email_verified", True),
         "phone": document.get("phone"),
         "addresses": document.get("addresses", []),
         "family_members": document.get("family_members", []),
@@ -179,73 +195,8 @@ def public_auth(user: dict) -> dict:
 
 
 async def seed_database() -> None:
-    categories = [
-        ("Prescription Medicines", "medkit", "Medicines"),
-        ("OTC Medicines", "bandage", "Medicines"),
-        ("Vitamins & Supplements", "leaf", "Wellness"),
-        ("Pain Relief", "flash", "Medicines"),
-        ("Cold & Cough", "cloud", "Medicines"),
-        ("Diabetes Care", "water", "Wellness"),
-        ("Personal Care", "sparkles", "Personal Care"),
-        ("Baby Care", "happy", "Family Care"),
-        ("Health Devices", "thermometer", "Healthcare Devices"),
-        ("First Aid", "medkit", "Healthcare Devices"),
-        ("Skin Care", "flower", "Personal Care"),
-        ("Oral Care", "happy", "Personal Care"),
-    ]
-    if await db.categories.count_documents({}) == 0:
-        await db.categories.insert_many([
-            {"id": f"cat-{index}", "name": name, "icon": icon, "group": group, "count": 18 + index * 7}
-            for index, (name, icon, group) in enumerate(categories)
-        ])
-    else:
-        # Ensure any legacy invalid icons are patched.
-        await db.categories.update_many({"icon": "medical-bag"}, {"$set": {"icon": "medkit"}})
-        await db.categories.update_many({"icon": "smile"}, {"$set": {"icon": "happy"}})
-
-    medicines = [
-        ("Paracetamol 500mg", "Strip of 10", "Cipla", 25, "OTC Medicines", False),
-        ("Vitamin D3 60000 IU", "Strip of 4", "Uprise", 120, "Vitamins & Supplements", False),
-        ("Crocin 500mg", "Strip of 10", "GSK", 34, "OTC Medicines", False),
-        ("Cetirizine 10mg", "Strip of 10", "Dr. Reddy's", 42, "OTC Medicines", False),
-        ("Amoxicillin 500mg", "Strip of 10", "Alkem", 86, "Prescription Medicines", True),
-        ("Pantoprazole 40mg", "Strip of 10", "Sun Pharma", 74, "Prescription Medicines", True),
-        ("Centrum Multivitamin", "Bottle of 30", "Haleon", 250, "Vitamins & Supplements", False),
-        ("Revital H Capsule", "Strip of 10", "Sun Pharma", 150, "Vitamins & Supplements", False),
-        ("OneTouch Glucometer", "1 device", "LifeScan", 899, "Health Devices", False),
-        ("Savlon Antiseptic", "100ml bottle", "ITC", 89, "First Aid", False),
-        ("Ibuprofen 400mg", "Strip of 10", "Abbott", 38, "Pain Relief", False),
-        ("Diclofenac Pain Relief Gel", "30g tube", "Voltaren", 112, "Pain Relief", False),
-        ("ORS Powder", "21.8g sachet", "Electral", 22, "OTC Medicines", False),
-        ("Azithromycin 500mg", "Strip of 3", "Cipla", 62, "Prescription Medicines", True),
-        ("Metformin 500mg", "Strip of 10", "USV", 18, "Diabetes Care", False),
-        ("Amlodipine 5mg", "Strip of 10", "Zydus", 24, "Prescription Medicines", True),
-        ("Omeprazole 20mg", "Strip of 10", "Dr. Reddy's", 48, "OTC Medicines", False),
-        ("Cough Relief Syrup", "100ml bottle", "Dabur", 96, "Cold & Cough", False),
-        ("Levocetirizine 5mg", "Strip of 10", "Sun Pharma", 35, "OTC Medicines", False),
-        ("Mupirocin 2% Ointment", "5g tube", "Glenmark", 98, "First Aid", False),
-        ("Clotrimazole 1% Cream", "15g tube", "Himalaya", 74, "Skin Care", False),
-        ("Folic Acid 5mg", "Strip of 30", "Torrent", 32, "Vitamins & Supplements", False),
-    ]
-    for index, (name, pack, manufacturer, price, category, prescription_required) in enumerate(medicines):
-        medicine_id = f"med-{index + 1}"
-        await db.medicines.update_one(
-            {"id": medicine_id},
-            {"$setOnInsert": {
-                "id": medicine_id,
-                "name": name,
-                "pack": pack,
-                "manufacturer": manufacturer,
-                "price": price,
-                "category": category,
-                "prescription_required": prescription_required,
-                "composition": "As listed on pack. Follow label directions.",
-                "availability": "In stock" if index != 5 else "Low stock",
-                "nearby_stores": 3 + index % 4,
-                "image_color": ["#CCFBF1", "#DBEAFE", "#FEF3C7", "#FCE7F3"][index % 4],
-            }},
-            upsert=True,
-        )
+    # The medicine catalog and categories come from the Indian medicines dataset (see catalog_import.py).
+    await ensure_dataset_imported(db)
 
     if await db.pharmacies.count_documents({}) == 0:
         await db.pharmacies.insert_many([
@@ -290,6 +241,8 @@ async def seed_database() -> None:
         })
 
     # Indexes for auth flows
+    await db.email_otps.create_index([("email", 1), ("purpose", 1)], unique=True)
+    await db.email_otps.create_index("expires_at", expireAfterSeconds=0)
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.users.create_index("apple_sub", unique=True, sparse=True)
@@ -320,28 +273,80 @@ async def root() -> dict:
 
 
 # ---------------- Email / phone auth ----------------
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+CUSTOMER_OTP_PURPOSE = "customer-email"
+
+
+def verification_pending(email: str, extra: dict) -> dict:
+    return {"verification_required": True, "email": email, **extra}
+
+
 @api_router.post("/auth/register")
 async def register(payload: RegisterInput) -> dict:
     email = payload.email.strip().lower()
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Please enter your name")
+    if not EMAIL_PATTERN.match(email):
+        raise HTTPException(status_code=400, detail="Please enter a valid email address")
     if len(payload.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    if await db.users.find_one({"email": email}, {"_id": 0}):
+    phone = (payload.phone or "").strip() or None
+    password_hash = bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt()).decode()
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing and existing.get("email_verified", True):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
-    document = {
-        "id": f"user-{uuid.uuid4().hex[:10]}", "name": payload.name.strip(), "email": email, "phone": payload.phone,
-        "password_hash": bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt()).decode(), "addresses": [], "created_at": now_iso(),
-    }
-    await db.users.insert_one(document)
-    return public_auth(document)
+    if existing:
+        # Unverified sign-up retried: refresh details and send a new code.
+        await db.users.update_one({"id": existing["id"]}, {"$set": {"name": name, "phone": phone, "password_hash": password_hash}})
+    else:
+        await db.users.insert_one({
+            "id": f"user-{uuid.uuid4().hex[:10]}", "name": name, "email": email, "phone": phone,
+            "password_hash": password_hash, "email_verified": False, "addresses": [], "created_at": now_iso(),
+        })
+    extra = await send_code(db, email, CUSTOMER_OTP_PURPOSE, "account")
+    return verification_pending(email, extra)
 
 
 @api_router.post("/auth/login")
 async def login(payload: AuthInput) -> dict:
     identifier = payload.identifier.strip().lower()
     user = await db.users.find_one({"$or": [{"email": identifier}, {"phone": payload.identifier.strip()}]}, {"_id": 0})
-    if not user or not bcrypt.checkpw(payload.password.encode(), user.get("password_hash", "").encode()):
+    if not user or not user.get("password_hash") or not bcrypt.checkpw(payload.password.encode(), user["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="We couldn't match those details")
+    if not user.get("email_verified", True):
+        try:
+            extra = await send_code(db, user["email"], CUSTOMER_OTP_PURPOSE, "account")
+        except HTTPException as exc:
+            if exc.status_code != 429:  # a recent code is still valid
+                raise
+            extra = {}
+        return verification_pending(user["email"], extra)
     return public_auth(user)
+
+
+@api_router.post("/auth/verify-email")
+async def verify_email(payload: VerifyEmailInput) -> dict:
+    email = payload.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if user.get("email_verified", True):
+        raise HTTPException(status_code=409, detail="This email is already verified. Please log in.")
+    await check_code(db, email, CUSTOMER_OTP_PURPOSE, payload.code)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"email_verified": True, "email_verified_at": now_iso()}})
+    return public_auth({**user, "email_verified": True})
+
+
+@api_router.post("/auth/resend-code")
+async def resend_code(payload: ResendCodeInput) -> dict:
+    email = payload.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user or user.get("email_verified", True):
+        # Same response either way so this can't be used to probe accounts.
+        return {"ok": True}
+    extra = await send_code(db, email, CUSTOMER_OTP_PURPOSE, "account")
+    return {"ok": True, **extra}
 
 
 # ---------------- Apple Sign-In ----------------
@@ -387,9 +392,8 @@ async def apple_signin(payload: AppleSignInInput) -> dict:
     apple_sub = claims["sub"]
     apple_email = claims.get("email")
     user = await db.users.find_one({"apple_sub": apple_sub}, {"_id": 0})
-    if not user and (payload.email or apple_email):
-        candidate = (payload.email or apple_email or "").lower()
-        user = await db.users.find_one({"email": candidate}, {"_id": 0})
+    if not user and apple_email:
+        user = await db.users.find_one({"email": apple_email.lower()}, {"_id": 0})
     if not user:
         user = {
             "id": f"user-{uuid.uuid4().hex[:10]}",
@@ -397,12 +401,13 @@ async def apple_signin(payload: AppleSignInInput) -> dict:
             "email": (payload.email or apple_email or "").lower(),
             "phone": None,
             "apple_sub": apple_sub,
+            "email_verified": True,
             "addresses": [],
             "created_at": now_iso(),
         }
         await db.users.insert_one(user)
     else:
-        updates: dict = {"apple_sub": apple_sub}
+        updates: dict = {"apple_sub": apple_sub, "email_verified": True}
         if payload.name and not user.get("name"):
             updates["name"] = payload.name
         if not user.get("email") and (payload.email or apple_email):
@@ -431,6 +436,9 @@ async def exchange_emergent_session(payload: SessionExchangeInput) -> dict:
         raise HTTPException(status_code=502, detail="Malformed Google sign-in response")
 
     user = await db.users.find_one({"email": email}, {"_id": 0})
+    if user and not user.get("email_verified", True):
+        await db.users.update_one({"id": user["id"]}, {"$set": {"email_verified": True}})
+        user["email_verified"] = True
     if not user:
         user = {
             "id": f"user-{uuid.uuid4().hex[:10]}",
@@ -438,6 +446,7 @@ async def exchange_emergent_session(payload: SessionExchangeInput) -> dict:
             "email": email,
             "phone": None,
             "picture": data.get("picture"),
+            "email_verified": True,
             "addresses": [],
             "created_at": now_iso(),
         }
@@ -476,14 +485,46 @@ async def categories() -> list:
     return await db.categories.find({}, {"_id": 0}).to_list(100)
 
 
-@api_router.get("/medicines")
-async def medicines(category: Optional[str] = None, search: Optional[str] = None) -> list:
-    query: dict = {}
+MEDICINE_LIST_FIELDS = {"_id": 0, "name_lower": 0, "source_url": 0, "imported_at": 0}
+
+
+async def search_medicines(search: Optional[str] = None, category: Optional[str] = None, limit: int = 40, skip: int = 0) -> list:
+    """Name matches that start with the search term come first, then other name/composition matches."""
+    base: dict = {}
     if category and category != "All":
-        query["category"] = {"$regex": f"^{re.escape(category)}$", "$options": "i"}
-    if search:
-        query["$or"] = [{"name": {"$regex": re.escape(search), "$options": "i"}}, {"category": {"$regex": re.escape(search), "$options": "i"}}]
-    return await db.medicines.find(query, {"_id": 0}).to_list(100)
+        base["category"] = category
+    term = (search or "").strip()
+    if not term:
+        return await db.medicines.find(base, MEDICINE_LIST_FIELDS).sort("name_lower", 1).skip(skip).limit(limit).to_list(limit)
+    escaped = re.escape(term.casefold())
+    prefix = await db.medicines.find({**base, "name_lower": {"$regex": f"^{escaped}"}}, MEDICINE_LIST_FIELDS).sort("name_lower", 1).limit(limit + skip).to_list(limit + skip)
+    seen = {item["id"] for item in prefix}
+    results = list(prefix)
+    if len(results) < limit + skip:
+        # Every word must appear in the name or the composition, in any order.
+        word_filters = [
+            {"$or": [{"name_lower": {"$regex": re.escape(word.casefold())}}, {"composition": {"$regex": re.escape(word), "$options": "i"}}]}
+            for word in term.split()[:6]
+        ]
+        contains = await db.medicines.find(
+            {**base, "id": {"$nin": list(seen)}, "$and": word_filters},
+            MEDICINE_LIST_FIELDS,
+        ).sort("name_lower", 1).limit(limit + skip - len(results)).to_list(limit + skip)
+        results.extend(contains)
+    return results[skip:skip + limit]
+
+
+@api_router.get("/medicines")
+async def medicines(category: Optional[str] = None, search: Optional[str] = None, limit: int = 40, skip: int = 0) -> list:
+    return await search_medicines(search, category, max(1, min(limit, 100)), max(0, skip))
+
+
+@api_router.get("/medicines/{medicine_id}")
+async def medicine_detail(medicine_id: str) -> dict:
+    medicine = await db.medicines.find_one({"id": medicine_id}, MEDICINE_LIST_FIELDS)
+    if not medicine:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    return medicine
 
 
 @api_router.get("/pharmacies")
@@ -527,14 +568,43 @@ async def create_order(payload: OrderCreate, user: dict = Depends(current_user))
     raise HTTPException(status_code=409, detail="Direct orders are disabled. Submit a medicine request and choose a pharmacist offer.")
 
 
+MAX_PRESCRIPTION_BYTES = 8 * 1024 * 1024
+
+
+def detect_image_type(contents: bytes) -> Optional[str]:
+    """Identify JPEG/PNG/WebP from the file bytes (never trust the client's content type)."""
+    if contents.startswith(b"\xff\xd8\xff"):
+        kind = "image/jpeg"
+    elif contents.startswith(b"\x89PNG\r\n\x1a\n"):
+        kind = "image/png"
+    elif len(contents) > 12 and contents[:4] == b"RIFF" and contents[8:12] == b"WEBP":
+        kind = "image/webp"
+    else:
+        return None
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(contents)) as image:
+            image.verify()
+    except Exception:
+        return None
+    return kind
+
+
 @api_router.post("/prescriptions")
 async def upload_prescription(file: UploadFile = File(...), user: dict = Depends(current_user)) -> dict:
-    contents = await file.read()
-    if len(contents) > 8 * 1024 * 1024:
+    contents = await file.read(MAX_PRESCRIPTION_BYTES + 1)
+    if len(contents) > MAX_PRESCRIPTION_BYTES:
         raise HTTPException(status_code=413, detail="Please choose an image smaller than 8 MB")
+    if not contents:
+        raise HTTPException(status_code=400, detail="The selected file is empty")
+    content_type = detect_image_type(contents)
+    if not content_type:
+        raise HTTPException(status_code=415, detail="Please upload a JPEG, PNG or WebP image")
+    extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[content_type]
+    filename = Path(file.filename or "").name or f"prescription.{extension}"
     prescription = {
-        "id": f"rx-{uuid.uuid4().hex[:10]}", "user_id": user["id"], "filename": file.filename or "prescription.jpg",
-        "content_type": file.content_type or "image/jpeg", "data": base64.b64encode(contents).decode(),
+        "id": f"rx-{uuid.uuid4().hex[:10]}", "user_id": user["id"], "filename": filename[:120],
+        "content_type": content_type, "data": base64.b64encode(contents).decode(),
         "status": "Awaiting pharmacist review", "created_at": now_iso(),
     }
     await db.prescriptions.insert_one(prescription)
@@ -659,6 +729,14 @@ def extract_medicines(raw_text: str, structured_medicine=None):
                 flags=re.IGNORECASE,
             )
 
+        # Cut the name before dosing instructions such as "1-0-1", "x 5 days", "after food"
+        name = re.split(
+            r"\b\d\s*-\s*\d\s*-\s*\d\b|\bx\s*\d+|\bfor\s+\d+|\b\d+\s*(?:day|days|week|weeks|month|months)\b|\b(?:after|before|with)\s+(?:food|meals?)\b",
+            name,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+
         # Remove bracketed numeric values such as (625)
         name = re.sub(r"\(\s*\d+\s*\)", "", name)
 
@@ -697,6 +775,11 @@ def extract_medicines(raw_text: str, structured_medicine=None):
             if re.search(pattern, cleaned, re.IGNORECASE):
                 frequency = value
                 break
+
+        if not frequency:
+            schedule = re.search(r"\b\d\s*-\s*\d\s*-\s*\d\b", cleaned)
+            if schedule:
+                frequency = re.sub(r"\s+", "", schedule.group(0))
 
         # -----------------------------------------------------
         # Dosage
@@ -746,151 +829,117 @@ def extract_medicines(raw_text: str, structured_medicine=None):
             unique[key] = medicine
 
     return list(unique.values())
+def ocr_provider() -> str:
+    """none | tesseract | veryfi. Defaults to Veryfi when its keys exist, else local Tesseract if installed."""
+    configured = os.environ.get("OCR_PROVIDER", "").strip().lower()
+    if configured in {"none", "tesseract", "veryfi"}:
+        return configured
+    if all(os.environ.get(key) for key in ("VERYFI_CLIENT_ID", "VERYFI_USERNAME", "VERYFI_API_KEY")):
+        return "veryfi"
+    return "tesseract" if shutil.which("tesseract") else "none"
+
+
+async def run_tesseract(image_bytes: bytes) -> Optional[str]:
+    binary = shutil.which("tesseract")
+    if not binary:
+        return None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            binary, "stdin", "stdout",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(image_bytes), timeout=60)
+    except (asyncio.TimeoutError, OSError):
+        logger.warning("Tesseract OCR failed or timed out")
+        return None
+    if process.returncode != 0:
+        return None
+    return stdout.decode("utf-8", errors="ignore")
+
+
+async def run_veryfi(prescription: dict, image_bytes: bytes) -> tuple[Optional[str], Optional[str], Optional[dict]]:
+    headers = {
+        "CLIENT-ID": os.environ.get("VERYFI_CLIENT_ID", ""),
+        "Authorization": f"apikey {os.environ.get('VERYFI_USERNAME', '')}:{os.environ.get('VERYFI_API_KEY', '')}",
+        "Accept": "application/json",
+    }
+    files = {"file": (prescription.get("filename", "prescription.jpg"), image_bytes, prescription.get("content_type", "image/jpeg"))}
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http:
+            response = await http.post(
+                "https://api.veryfi.com/api/v8/partner/any-documents",
+                headers=headers, files=files, data={"blueprint_name": "prescription_medication_label"},
+            )
+    except httpx.RequestError as exc:
+        logger.warning("Veryfi request failed: %s", exc)
+        return None, None, None
+    if not response.is_success:
+        logger.warning("Veryfi returned HTTP %s", response.status_code)
+        return None, None, None
+    result = response.json()
+    structured = result.get("medicine_name")
+    if isinstance(structured, dict):
+        structured = structured.get("value")
+    return result.get("text", "") or "", structured if isinstance(structured, str) else None, result
+
+
 @api_router.post("/prescriptions/{prescription_id}/analyze")
 async def analyze_prescription(
     prescription_id: str,
-    user: dict = Depends(current_user)
+    payload: Optional[AnalyzePrescriptionInput] = None,
+    user: dict = Depends(current_user),
 ) -> dict:
-
-    # 1. Find the prescription belonging to the logged-in user
-    prescription = await db.prescriptions.find_one({
-        "id": prescription_id,
-        "user_id": user["id"],
-    })
-
+    """OCR assists the customer; it never blocks the request. Pharmacists still review the image."""
+    prescription = await db.prescriptions.find_one({"id": prescription_id, "user_id": user["id"]}, {"_id": 0})
     if not prescription:
-        raise HTTPException(
-            status_code=404,
-            detail="Prescription not found"
-        )
-
-    # 2. Get the original image from MongoDB
+        raise HTTPException(status_code=404, detail="Prescription not found")
     try:
-        image_bytes = base64.b64decode(
-            prescription["data"]
-        )
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="Stored prescription image is invalid"
-        )
+        image_bytes = base64.b64decode(prescription["data"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Stored prescription image is invalid") from exc
 
-    # 3. Get Veryfi credentials
-    veryfi_client_id = os.getenv("VERYFI_CLIENT_ID")
-    veryfi_username = os.getenv("VERYFI_USERNAME")
-    veryfi_api_key = os.getenv("VERYFI_API_KEY")
+    consent = bool(payload and payload.external_ocr_consent)
+    provider = ocr_provider()
+    if provider == "veryfi" and not consent:
+        # No consent to send the image externally: fall back to local OCR if we have it.
+        provider = "tesseract" if shutil.which("tesseract") else "none"
 
-    if not all([
-        veryfi_client_id,
-        veryfi_username,
-        veryfi_api_key,
-    ]):
-        raise HTTPException(
-            status_code=500,
-            detail="Veryfi credentials are not configured"
-        )
+    ocr_text: Optional[str] = None
+    structured: Optional[str] = None
+    veryfi_result: Optional[dict] = None
+    if provider == "veryfi":
+        ocr_text, structured, veryfi_result = await run_veryfi(prescription, image_bytes)
+        if ocr_text is None and shutil.which("tesseract"):
+            provider = "tesseract"
+    if provider == "tesseract" and ocr_text is None:
+        ocr_text = await run_tesseract(image_bytes)
 
-    # 4. Veryfi authentication
-    headers = {
-        "CLIENT-ID": veryfi_client_id,
-        "Authorization": (
-            f"apikey {veryfi_username}:{veryfi_api_key}"
-        ),
-        "Accept": "application/json",
-    }
+    if provider == "none":
+        status, message = "unavailable", "Automatic reading is turned off. A pharmacist will read your prescription."
+    elif ocr_text is None:
+        status, message = "failed", "We couldn't read this image automatically. A pharmacist will read your prescription."
+    else:
+        status, message = "completed", "Check these suggestions carefully. They are machine-read and may be wrong."
 
-    # 5. Send prescription to Veryfi AnyDocs
-    files = {
-        "file": (
-            prescription.get(
-                "filename",
-                "prescription.jpg"
-            ),
-            image_bytes,
-            prescription.get(
-                "content_type",
-                "image/jpeg"
-            ),
-        )
-    }
-
-    data = {
-        "blueprint_name": "prescription_medication_label"
-    }
-
-    try:
-        async with httpx.AsyncClient(
-            timeout=60.0
-        ) as client:
-
-            response = await client.post(
-                "https://api.veryfi.com/api/v8/partner/any-documents",
-                headers=headers,
-                files=files,
-                data=data,
-            )
-
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Veryfi request failed: {str(exc)}"
-        )
-
-    # 6. Handle Veryfi error
-    if not response.is_success:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Veryfi error: {response.text}"
-        )
-
-    veryfi_result = response.json()
-
-    # Debugging - useful while testing
-    print("VERYFI RESULT:")
-    print(veryfi_result)
-
-    # 7. Extract OCR text
-    ocr_text = veryfi_result.get("text", "") or ""
-
-    # 8. Extract structured medicine name
-    structured_medicine = veryfi_result.get(
-        "medicine_name"
-    )
-
-    if isinstance(structured_medicine, dict):
-        structured_medicine = structured_medicine.get(
-            "value"
-        )
-
-    # 9. Extract medicines from OCR + Veryfi medicine field
-    medicines = extract_medicines(
-        ocr_text,
-        structured_medicine,
-    )
-
-    # 10. Save analysis
-    await db.prescriptions.update_one(
-        {
-            "id": prescription_id,
-            "user_id": user["id"],
-        },
-        {
-            "$set": {
-                "veryfi_analysis": veryfi_result,
-                "ocr_text": ocr_text,
-                "medicines": medicines,
-                "analysis_status": "completed",
-            }
-        }
-    )
-
-    # 11. Return medicines to frontend
+    medicines = extract_medicines(ocr_text or "", structured) if ocr_text is not None else []
+    update: dict = {"ocr_provider": provider, "ocr_text": ocr_text or "", "medicines": medicines, "analysis_status": status, "analyzed_at": now_iso()}
+    if veryfi_result is not None:
+        update["veryfi_analysis"] = veryfi_result
+    await db.prescriptions.update_one({"id": prescription_id, "user_id": user["id"]}, {"$set": update})
     return {
         "prescription_id": prescription_id,
-        "ocr_text": ocr_text,
+        "provider": provider,
+        "status": status,
+        "message": message,
+        "ocr_text": ocr_text or "",
         "medicines": medicines,
-        "status": "completed",
     }
+
+
+@api_router.get("/prescriptions/ocr-config")
+async def prescription_ocr_config() -> dict:
+    return {"provider": ocr_provider(), "external": ocr_provider() == "veryfi"}
+
 
 @api_router.post("/addresses")
 async def add_address(payload: AddressInput, user: dict = Depends(current_user)) -> dict:
