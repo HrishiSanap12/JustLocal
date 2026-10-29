@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
+from admin_routes import RequestStats, build_admin_router
 from catalog_import import ensure_dataset_imported
 from email_otp import check_code, send_code
 from pharmacy_routes import build_pharmacy_router
@@ -52,6 +53,8 @@ rzp_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if _ra
 
 app = FastAPI(title="Justlocal API")
 api_router = APIRouter(prefix="/api")
+request_stats = RequestStats()
+app.middleware("http")(request_stats.middleware)
 
 
 class AuthInput(BaseModel):
@@ -1059,6 +1062,7 @@ async def razorpay_webhook(request: Request) -> dict:
 
 
 app.include_router(api_router)
+app.include_router(build_admin_router(db, now_iso, request_stats))
 app.include_router(build_pharmacy_router(db=db, jwt_secret=JWT_SECRET, now_iso=now_iso, customer_dependency=current_user))
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")

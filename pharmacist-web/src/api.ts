@@ -129,9 +129,44 @@ export const pharmacistApi = {
   updateOrder: (token: string, orderId: string, status: "Preparing" | "Out for Delivery" | "Delivered") => call<{ id: string; status: string }>(`/pharmacist/orders/${orderId}/status`, token, { method: "PATCH", body: JSON.stringify({ status }) }),
 };
 
+export type DailyPoint = { date: string; requests: number; orders: number; signups: number };
+export type EndpointStat = { route: string; calls: number; p50_ms: number | null; p95_ms: number | null; error_rate: number };
+export type AdminMetrics = {
+  generated_at: string;
+  window_days: number;
+  users: { total: number; email_verified: number; new_7d: number; new_30d: number; active_7d: number; ordering_customers: number; sign_in_methods: Record<string, number> };
+  pharmacies: { total: number; verified: number; pending: number; rejected: number; suspended: number; accepting: number };
+  requests: { total: number; last_7d: number; by_status: Record<string, number>; with_prescription: number; with_offers: number; avg_pharmacies_matched: number; response_rate: number | null; median_first_offer_minutes: number | null; p90_first_offer_minutes: number | null };
+  offers: { total: number; available: number; partial: number; unavailable: number; selected: number };
+  orders: { total: number; by_status: Record<string, number>; gross_value: number; avg_order_value: number; conversion_rate: number | null; delivered: number };
+  daily: DailyPoint[];
+  top_medicines: { name: string; quantity: number }[];
+  top_pharmacies: { id: string; name: string; orders: number; value: number; offers: number }[];
+  system: {
+    uptime_seconds: number; requests_24h: number; p50_ms: number | null; p95_ms: number | null; p99_ms: number | null;
+    server_error_rate: number; client_error_rate: number; db_ping_ms: number | null; email_provider: string; email_dev_mode: boolean;
+    ocr_provider: string; catalog_size: number; endpoints: EndpointStat[]; latency_by_hour: { hour: number; calls: number; p95_ms: number | null }[];
+  };
+};
+export type AdminPharmacy = {
+  id: string; name: string; address?: string; area?: string; license_number?: string; latitude?: number; longitude?: number;
+  verification_status: string; accepting_requests?: boolean; created_at?: string; moderation_reason?: string | null;
+  orders: number; carried_medicines: number;
+  pharmacist?: { id: string; name: string; email: string; phone: string; status: string; email_verified: boolean } | null;
+};
+
+function adminPost<T>(path: string, token: string, body?: object) {
+  return adminCall<T>(path, token, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+}
+
 export const pharmacyAdminApi = {
   pending: (token: string) => adminCall<PendingPharmacy[]>("/admin/pharmacies/pending", token),
   verify: (token: string, pharmacyId: string) => adminCall<{ pharmacy_id: string; status: string }>(`/admin/pharmacies/${encodeURIComponent(pharmacyId)}/verify`, token, { method: "POST" }),
+  metrics: (token: string, days = 14) => adminCall<AdminMetrics>(`/admin/metrics?days=${days}`, token),
+  pharmacies: (token: string) => adminCall<AdminPharmacy[]>("/admin/pharmacies", token),
+  reject: (token: string, pharmacyId: string, reason: string) => adminPost<{ status: string }>(`/admin/pharmacies/${encodeURIComponent(pharmacyId)}/reject`, token, { reason }),
+  suspend: (token: string, pharmacyId: string, reason: string) => adminPost<{ status: string }>(`/admin/pharmacies/${encodeURIComponent(pharmacyId)}/suspend`, token, { reason }),
+  reinstate: (token: string, pharmacyId: string) => adminPost<{ status: string }>(`/admin/pharmacies/${encodeURIComponent(pharmacyId)}/reinstate`, token),
 };
 
 export function prescriptionImage(data: { content_type: string; data_base64: string }) {
