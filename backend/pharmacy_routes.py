@@ -253,10 +253,14 @@ def build_pharmacy_router(db, jwt_secret: str, now_iso, customer_dependency) -> 
             raise HTTPException(status_code=401, detail="Email or password is incorrect")
         if not account.get("email_verified", True):
             raise HTTPException(status_code=403, detail="Verify your email before signing in. Use the code we emailed you.")
+        if account.get("status") == "rejected":
+            raise HTTPException(status_code=403, detail="Your pharmacy application was not approved. Contact Justlocal support for details.")
         if account.get("status") != "verified":
             raise HTTPException(status_code=403, detail="Your pharmacy application is awaiting manual verification")
-        pharmacy = await db.pharmacies.find_one({"id": account["pharmacy_id"], "verification_status": "verified"})
-        if not pharmacy:
+        pharmacy = await db.pharmacies.find_one({"id": account["pharmacy_id"]})
+        if not pharmacy or pharmacy.get("verification_status") == "suspended":
+            raise HTTPException(status_code=403, detail="Your pharmacy is suspended. Contact Justlocal support.")
+        if pharmacy.get("verification_status") != "verified":
             raise HTTPException(status_code=403, detail="Your pharmacy is not verified")
         token, session_id, expiry = issue_token(account)
         await db.pharmacist_sessions.insert_one({"id": session_id, "account_id": account["id"], "expires_at": expiry, "created_at": datetime.now(timezone.utc)})

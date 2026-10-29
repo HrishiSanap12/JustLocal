@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, LockKeyhole, Store, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, BadgeCheck, ClipboardList, LockKeyhole, ShieldCheck, Store, X } from "lucide-react";
 import type { LatLngExpression } from "leaflet";
 import { CircleMarker, MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 
@@ -35,7 +35,8 @@ function LocationMap({ point, onSelect }: { point: MapPoint | null; onSelect: (p
   );
 }
 
-export function AuthDialog({ onClose, onLogin, onRegister }: {
+export function AuthDialog({ onClose, onLogin, onRegister, page = false }: {
+  page?: boolean;
   onClose: () => void;
   onLogin: (email: string, password: string) => Promise<void>;
   onRegister: (details: PharmacyRegistration) => Promise<RegistrationResult>;
@@ -162,15 +163,15 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
     );
   }
 
-  return (
-    <div className="modal-backdrop auth-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+  const finish = () => { if (page) { setMode("login"); setInfo(""); setError(""); } else onClose(); };
+  const body = (
+    <>
         <div className="dialog-header">
           <div><span className="section-label-text">JUSTLOCAL PHARMACY</span><h2 id="auth-title">{mode === "pending" ? "Application received" : mode === "verify" ? "Verify your email" : mode === "login" ? "Sign in to your pharmacy" : "Register your pharmacy"}</h2></div>
-          <button className="icon-button quiet" aria-label="Close sign-in dialog" onClick={onClose}><X size={18} /></button>
+          {!page && <button className="icon-button quiet" aria-label="Close sign-in dialog" onClick={onClose}><X size={18} /></button>}
         </div>
         {mode === "pending" ? (
-          <div className="pending-state"><span className="pending-icon"><Store size={20} /></span><strong>Manual verification is required</strong><p>{info}</p><p>We’ll enable pharmacist access after the pharmacy license and details are reviewed.</p><button className="button button-primary" onClick={onClose}>Done <ArrowRight size={15} /></button></div>
+          <div className="pending-state"><span className="pending-icon"><Store size={20} /></span><strong>Manual verification is required</strong><p>{info}</p><p>We’ll enable pharmacist access after the pharmacy license and details are reviewed.</p><button className="button button-primary" onClick={finish}>{page ? "Back to sign in" : "Done"} <ArrowRight size={15} /></button></div>
         ) : mode === "verify" ? (
           <form onSubmit={submitCode} className="auth-form">
             <p className="dialog-intro">{info || `Enter the 6-digit code sent to ${form.email}.`}</p>
@@ -210,7 +211,36 @@ export function AuthDialog({ onClose, onLogin, onRegister }: {
             <div className="dialog-actions auth-form-actions"><button type="button" className="button button-quiet" onClick={() => { setMode("login"); setError(""); }}><ArrowLeft size={14} />Back to sign in</button><button className="button button-primary" disabled={busy}>{busy ? "Submitting…" : "Submit for verification"}</button></div>
           </form>
         )}
-      </section>
+    </>
+  );
+
+  if (page) {
+    return (
+      <div className="auth-page">
+        <aside className="auth-page-brand">
+          <a className="brand-lockup" href="/" aria-label="Justlocal home"><span className="capsule-mark"><span /><i>+</i></span><span className="brand-name">Just<span>local</span></span></a>
+          <div className="auth-page-pitch">
+            <span className="auth-page-kicker">PHARMACY WORKSPACE</span>
+            <h1>Serve your neighbourhood, one request at a time.</h1>
+            <p>Receive nearby medicine requests, review prescriptions and send offers. Customers choose, you deliver.</p>
+            <ul>
+              <li><ClipboardList size={18} />Requests from customers near your store</li>
+              <li><ShieldCheck size={18} />Prescriptions shared only with consent</li>
+              <li><BadgeCheck size={18} />Verified pharmacies only</li>
+            </ul>
+          </div>
+          <small>© Justlocal · Medicines closer to you</small>
+        </aside>
+        <main className="auth-page-main">
+          <section className={`auth-page-card ${mode === "register" ? "wide" : ""}`} aria-labelledby="auth-title">{body}</section>
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-backdrop auth-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">{body}</section>
     </div>
   );
 }
